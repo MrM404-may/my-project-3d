@@ -40,7 +40,7 @@ def build_rotation(r):
     R[:, 2, 2] = 1 - 2 * (x * x + y * y)
     return R
 
-def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask=None, is_training=False,  ape_code=-1, camera_region=0):
+def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask=None, is_training=False,  ape_code=-1, camera_region=0, use_continuous_update=False):
     ## view frustum filtering for acceleration    
     if visible_mask is None:
         visible_mask = torch.ones(pc.get_anchor.shape[0], dtype=torch.bool, device = pc.get_anchor.device)
@@ -62,6 +62,7 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     level = pc.get_level[visible_mask][region_mask]
     grid_offsets = pc._offset[visible_mask][region_mask]
     grid_scaling = pc.get_scaling[visible_mask][region_mask]
+    current_region_ids = region[region_mask]
 
     ## get view properties for anchor
     ob_view = anchor - viewpoint_camera.camera_center
@@ -94,6 +95,19 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         cat_local_view = torch.cat([feat, ob_view, ob_dist], dim=1) # [N, c+3+1]
         cat_local_view_wodist = torch.cat([feat, ob_view], dim=1) # [N, c+3]
 
+    # ==============================
+    # 持续更新：应用全局外观模型
+    # ==============================
+    delta_sh = None
+    delta_scale = None
+    if use_continuous_update and hasattr(pc, 'get_appearance_updates'):
+        delta_sh, delta_scale = pc.get_appearance_updates()
+        # 过滤到当前区域
+        if delta_sh is not None:
+            delta_sh = delta_sh[visible_mask][region_mask]
+        if delta_scale is not None:
+            delta_scale = delta_scale[visible_mask][region_mask]
+
     if pc.appearance_dim > 0:
         if is_training or ape_code < 0: 
             camera_indicies = torch.ones_like(cat_local_view[:,0], dtype=torch.long, device=ob_dist.device) * viewpoint_camera.uid 
@@ -121,6 +135,23 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         prog[~transition_mask] = 1.0
         neural_opacity = neural_opacity * prog
 
+    # ==============================
+    # 持续更新：应用移除因子到不透明度
+    # ==============================
+    if use_continuous_update and hasattr(pc, 'apply_removal_factor'):
+        # 将neural_opacity重塑为[N, k]，然后对每个anchor应用移除因子
+        num_anchors = anchor.shape[0]
+        neural_opacity_reshaped = neural_opacity.reshape([num_anchors, -1])
+        # 获取当前anchor的原始不透明度并应用移除因子
+        base_opacity = pc.get_opacity[visible_mask][region_mask]
+        # 重复base_opacity到每个offset
+        base_opacity_repeated = repeat(base_opacity, 'n 1 -> n k', k=pc.n_offsets)
+        # 应用移除因子到base_opacity
+        applied_opacity = pc.apply_removal_factor(base_opacity_repeated)
+        # 用应用了移除因子的opacity调整neural_opacity
+        neural_opacity = neural_opacity_reshaped * applied_opacity
+        neural_opacity = neural_opacity.reshape([-1, 1])
+
     # opacity mask generation
     neural_opacity = neural_opacity.reshape([-1, 1])
     mask = (neural_opacity>0.0)
@@ -141,6 +172,22 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         else:
             color = pc.get_color_mlp(camera_region)(cat_local_view_wodist)
     color = color.reshape([anchor.shape[0]*pc.n_offsets, 3])# [mask]
+    
+    # ==============================
+    # 持续更新：应用全局外观模型到颜色
+    # ==============================
+    if use_continuous_update and delta_sh is not None:
+        # 这里我们简化处理，delta_sh包含球谐系数的增量
+        # 我们将其应用为颜色的微调
+        num_offsets = pc.n_offsets
+        # 重复delta_sh到每个offset
+        delta_sh_repeated = repeat(delta_sh, 'n c -> (n k) c', k=num_offsets)
+        # 取前3个维度作为颜色增量
+        delta_color = delta_sh_repeated[:, :3]
+        # 应用到颜色
+        color = color + delta_color
+        # 确保颜色在[0, 1]范围内
+        color = torch.clamp(color, 0.0, 1.0)
 
     # get offset's cov
     if pc.add_cov_dist:
@@ -161,6 +208,23 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     
     # post-process cov
     scaling = scaling_repeat[:,3:] * torch.sigmoid(scale_rot[:,:3]) # * (1+torch.sigmoid(repeat_dist))
+    
+    # ==============================
+    # 持续更新：应用缩放增量
+    # ==============================
+    if use_continuous_update and delta_scale is not None:
+        # 获取当前在mask中的索引，确定对应哪些anchor和offset
+        # 这部分需要更复杂的处理，这里我们做简化
+        # delta_scale形状是[N, 3]，我们需要将其与mask匹配
+        num_anchors = anchor.shape[0]
+        mask_reshaped = mask.reshape([num_anchors, -1])
+        # 对每个offset，找出它属于哪个anchor
+        anchor_indices = (torch.arange(len(mask), device=mask.device) // pc.n_offsets)
+        # 选择与mask匹配的delta_scale
+        delta_scale_selected = delta_scale[anchor_indices[mask]]
+        # 应用缩放增量
+        scaling = scaling * (1.0 + delta_scale_selected)
+    
     rot = pc.rotation_activation(scale_rot[:,3:7])
     
     # post-process offsets to get centers for gaussians
@@ -172,7 +236,7 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     else:
         return xyz, color, opacity, scaling, rot
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier=1.0, visible_mask=None, retain_grad=False, ape_code=-1, camera_region=0):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier=1.0, visible_mask=None, retain_grad=False, ape_code=-1, camera_region=0, use_continuous_update=False):
     """
     Render the scene. 
     
@@ -182,9 +246,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     is_training = pc.get_color_mlp(0).training
         
     if is_training:
-        xyz, color, opacity, scaling, rot, neural_opacity, mask = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, camera_region=camera_region)
+        xyz, color, opacity, scaling, rot, neural_opacity, mask = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, camera_region=camera_region, use_continuous_update=use_continuous_update)
     else:
-        xyz, color, opacity, scaling, rot = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, ape_code=ape_code, camera_region=camera_region)
+        xyz, color, opacity, scaling, rot = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, ape_code=ape_code, camera_region=camera_region, use_continuous_update=use_continuous_update)
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(xyz, dtype=pc.get_anchor.dtype, requires_grad=True, device="cuda") + 0

@@ -30,6 +30,10 @@ import math
 # ====================== 新增：引入分区训练依赖 ======================
 from shapely.geometry import Polygon, Point
 # =====================================================================
+
+# ====================== 新增：引入持续更新依赖 ======================
+from scene.continuous_update import ContinuousUpdateManager
+# =====================================================================
     
 class GaussianModel:
 
@@ -168,6 +172,12 @@ class GaussianModel:
         self._stored_anchors = {}  # 存储区域外的锚点数据 {region_key: {data_dict}}
         self._current_region_polygon = None
         self._current_region_key = None
+        # =========================================================================
+        
+        # ====================== 新增：持续更新相关成员变量 ======================
+        self.continuous_update_manager = None  # 持续更新管理器
+        self.current_timestamp = 0.0  # 当前时间戳 (归一化到 [0, 1])
+        self.use_continuous_update = False  # 是否启用持续更新模式
         # =========================================================================
 
     def eval(self):
@@ -1709,4 +1719,253 @@ class GaussianModel:
             # self.training_setup(self.training_args)  
 
         print(f"==================================================\n")
+    
+    # ==============================
+    # 持续更新相关方法
+    # ==============================
+    def init_continuous_update(self, num_regions: int = 65, sh_degree: int = 3):
+        """
+        初始化持续更新管理器
+        """
+        print(f"\n[ContinuousUpdate] 初始化持续更新管理器...")
+        self.continuous_update_manager = ContinuousUpdateManager(
+            num_regions=num_regions,
+            sh_degree=sh_degree
+        )
+        self.use_continuous_update = True
+        print(f"[ContinuousUpdate] 初始化完成")
+    
+    def set_timestamp(self, timestamp: float):
+        """
+        设置当前时间戳 (归一化到 [0, 1])
+        """
+        self.current_timestamp = max(0.0, min(1.0, timestamp))
+        print(f"[ContinuousUpdate] 设置时间戳: {self.current_timestamp:.4f}")
+        
+        # 如果管理器存在，也更新它的时间戳
+        if self.continuous_update_manager is not None:
+            self.continuous_update_manager.current_timestamp = self.current_timestamp
+    
+    def init_timestamp_update(self, timestamp: float):
+        """
+        初始化新时间戳的更新流程
+        """
+        if self.continuous_update_manager is None:
+            print(f"[ContinuousUpdate] 警告: 持续更新管理器未初始化")
+            return
+        
+        self.set_timestamp(timestamp)
+        
+        # 初始化新时间戳
+        num_gaussians = self._anchor.shape[0]
+        self.continuous_update_manager.initialize_new_timestamp(timestamp, num_gaussians)
+        
+        # 将移除因子添加到优化器
+        if self.continuous_update_manager.removal_factor is not None:
+            # 确保优化器已创建
+            if self.optimizer is not None:
+                # 添加移除因子参数到优化器
+                self.optimizer.add_param_group({
+                    'params': self.continuous_update_manager.removal_factor.parameters(),
+                    'lr': 0.001,
+                    'name': 'removal_factor'
+                })
+                print(f"[ContinuousUpdate] 已添加移除因子到优化器")
+    
+    def get_appearance_updates(self):
+        """
+        获取当前时间戳的外观更新 (delta_sh 和 delta_scale)
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            return None, None
+        
+        positions = self._anchor
+        region_ids = self._region
+        
+        return self.continuous_update_manager.global_appearance(positions, self.current_timestamp, region_ids)
+    
+    def apply_removal_factor(self, opacities: torch.Tensor):
+        """
+        应用移除因子到不透明度
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            return opacities
+        
+        removal_factor = self.continuous_update_manager.get_removal_factor()
+        if removal_factor is None:
+            return opacities
+        
+        return removal_factor.apply(opacities)
+    
+    def get_removal_regularization_loss(self):
+        """
+        获取移除因子的正则化损失
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            return 0.0
+        
+        removal_factor = self.continuous_update_manager.get_removal_factor()
+        if removal_factor is None:
+            return 0.0
+        
+        return removal_factor.get_regularization_loss()
+    
+    def update_training_stage(self):
+        """
+        更新训练阶段 (在每个iteration后调用)
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            return
+        
+        self.continuous_update_manager.update_stage()
+        
+        # 检查是否需要DBSCAN剪枝
+        if self.continuous_update_manager.should_do_dbscan():
+            print(f"[ContinuousUpdate] 执行DBSCAN剪枝...")
+            self._perform_dbscan_pruning()
+        
+        # 检查是否需要重要性剪枝
+        if self.continuous_update_manager.should_do_importance_prune():
+            print(f"[ContinuousUpdate] 执行重要性剪枝...")
+            self._perform_importance_pruning()
+    
+    def _perform_dbscan_pruning(self):
+        """
+        执行DBSCAN剪枝
+        """
+        if self.continuous_update_manager is None:
+            return
+        
+        removal_factor = self.continuous_update_manager.get_removal_factor()
+        if removal_factor is None:
+            return
+        
+        # 获取移除概率
+        removal_probs = removal_factor.get_removal_prob()
+        
+        # 执行DBSCAN剪枝
+        prune_mask = self.continuous_update_manager.dbscan_pruner.prune(
+            removal_probs,
+            self._anchor,
+            threshold=0.01
+        )
+        
+        if prune_mask.sum() > 0:
+            print(f"[ContinuousUpdate] DBSCAN剪枝: 删除 {prune_mask.sum().item()} 个高斯")
+            self.prune_anchor(prune_mask)
+    
+    def _perform_importance_pruning(self, render_pkg=None):
+        """
+        执行重要性剪枝
+        """
+        if self.continuous_update_manager is None:
+            return
+        
+        # 计算重要性分数
+        importance_scores = self.continuous_update_manager.compute_importance_score(
+            self, render_pkg
+        )
+        
+        # 剪枝重要性分数较低的高斯
+        prune_mask = importance_scores < 0.05
+        
+        if prune_mask.sum() > 0:
+            print(f"[ContinuousUpdate] 重要性剪枝: 删除 {prune_mask.sum().item()} 个高斯")
+            self.prune_anchor(prune_mask)
+    
+    def save_current_state_to_visibility_pool(self, cameras):
+        """
+        保存当前状态到可见性池
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            return
+        
+        self.continuous_update_manager.save_current_state(self, cameras)
+    
+    def get_generative_replay_cameras(self):
+        """
+        获取生成式回放相机列表
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            return []
+        
+        return self.continuous_update_manager.get_generative_replay_cameras()
+    
+    def generate_layout_invariant_mask(self, old_image, new_image, region_id=None):
+        """
+        生成布局不变掩码 (使用SAM网络的占位接口)
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            # 默认返回全True掩码
+            return torch.ones_like(old_image[0, :, :], dtype=torch.bool)
+        
+        return self.continuous_update_manager.mask_generator.generate_mask(
+            old_image, new_image, region_id
+        )
+    
+    def get_current_stage(self):
+        """
+        获取当前训练阶段
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            return None
+        
+        return self.continuous_update_manager.current_stage
+    
+    def save_continuous_update_checkpoint(self, path: str):
+        """
+        保存持续更新相关的检查点
+        """
+        if not self.use_continuous_update or self.continuous_update_manager is None:
+            return
+        
+        checkpoint = {
+            'timestamp': self.current_timestamp,
+            'global_appearance': self.continuous_update_manager.global_appearance.state_dict(),
+            'current_stage': self.continuous_update_manager.current_stage,
+            'stage_iteration': self.continuous_update_manager.stage_iteration,
+            'visibility_pool': {
+                'gaussian_states': self.continuous_update_manager.visibility_pool.gaussian_states,
+                'camera_states': self.continuous_update_manager.visibility_pool.camera_states,
+            }
+        }
+        
+        # 保存移除因子
+        if self.continuous_update_manager.removal_factor is not None:
+            checkpoint['removal_factor'] = self.continuous_update_manager.removal_factor.state_dict()
+        
+        torch.save(checkpoint, path)
+        print(f"[ContinuousUpdate] 保存检查点到: {path}")
+    
+    def load_continuous_update_checkpoint(self, path: str):
+        """
+        加载持续更新相关的检查点
+        """
+        if not os.path.exists(path):
+            print(f"[ContinuousUpdate] 警告: 检查点不存在: {path}")
+            return False
+        
+        checkpoint = torch.load(path, map_location='cuda')
+        
+        # 加载基本信息
+        self.current_timestamp = checkpoint.get('timestamp', 0.0)
+        
+        if self.continuous_update_manager is None:
+            # 如果管理器不存在，先初始化
+            self.init_continuous_update()
+        
+        # 加载全局外观模型
+        if 'global_appearance' in checkpoint:
+            self.continuous_update_manager.global_appearance.load_state_dict(checkpoint['global_appearance'])
+        
+        # 加载阶段信息
+        self.continuous_update_manager.current_stage = checkpoint.get('current_stage', None)
+        self.continuous_update_manager.stage_iteration = checkpoint.get('stage_iteration', 0)
+        
+        # 加载移除因子
+        if 'removal_factor' in checkpoint and self.continuous_update_manager.removal_factor is not None:
+            self.continuous_update_manager.removal_factor.load_state_dict(checkpoint['removal_factor'])
+        
+        print(f"[ContinuousUpdate] 加载检查点完成: {path}")
+        return True
 
