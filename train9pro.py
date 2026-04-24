@@ -625,6 +625,13 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
         current_local_iter = REGION_LOCAL_ITERS[current_region_idx]  # 获取当前区域的本地步数
         current_region_total_iters = current_region['iterations']    # 获取当前区域的总步数
         # ===========================================================================
+        
+        # ====================== 新增：设置时间戳，支持持续更新 ======================
+        # 时间戳可以使用归一化的本地迭代（0~1之间）
+        normalized_time = current_local_iter / max(current_region_total_iters, 1)
+        if hasattr(gaussians, 'set_time'):
+            gaussians.set_time(normalized_time)
+        # ===============================================================================
 
         iter_start.record()
 

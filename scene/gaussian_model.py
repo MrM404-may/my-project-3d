@@ -67,7 +67,9 @@ class GaussianModel:
                  progressive: bool = True,
                  extend: float = 1.1,
                  freeze_gaussians: bool = False, # 新增：冻结高斯球开关
-                 num_regions: int = 65 # 新增：区域数量
+                 num_regions: int = 65, # 新增：区域数量
+                 add_time: bool = True, # 新增：是否添加时间戳输入
+                 time_dim: int = 8 # 新增：时间戳编码维度
                  ):
 
         self.feat_dim = feat_dim
@@ -79,6 +81,13 @@ class GaussianModel:
 
         self.num_regions = num_regions
         self.appearance_dim = appearance_dim
+        
+        # ====================== 新增：持续更新式建模-时间戳相关成员变量 ======================
+        self.add_time = add_time  # 是否使用时间戳输入
+        self.time_dim = time_dim  # 时间戳编码维度
+        self.current_time = 0.0  # 当前时间戳（用于训练和渲染）
+        self.time_encoder = nn.ModuleList()  # 每个区域的时间编码器
+        # ======================================================================================
         self.embedding_appearance = nn.ModuleList()
         for i in range(self.num_regions):
             self.embedding_appearance.append(None)
@@ -124,32 +133,49 @@ class GaussianModel:
         self.color_dist_dim = 1 if self.add_color_dist else 0
         self.level_dim = 1 if self.add_level else 0
     
+        # ====================== 新增：计算时间维度对输入维度的贡献 ======================
+        time_input_dim = self.time_dim if self.add_time else 0
+        # ================================================================================
+        
         # 初始化区域专家MLP
         self.mlp_opacity = nn.ModuleList()
         self.mlp_cov = nn.ModuleList()
         self.mlp_color = nn.ModuleList()
         
         for i in range(self.num_regions):
-            # 不透明度MLP
+            # ====================== 新增：时间编码器 ======================
+            if self.add_time:
+                time_enc = nn.Sequential(
+                    nn.Linear(1, self.time_dim * 2),
+                    nn.ReLU(True),
+                    nn.Linear(self.time_dim * 2, self.time_dim),
+                    nn.ReLU(True)
+                ).cuda()
+                self.time_encoder.append(time_enc)
+            else:
+                self.time_encoder.append(None)
+            # =============================================================
+            
+            # 不透明度MLP - 添加时间维度
             mlp_opacity = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim, self.feat_dim),
+                    nn.Linear(self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim+time_input_dim, self.feat_dim),
                     nn.ReLU(True),
                     nn.Linear(self.feat_dim, self.n_offsets),
                     nn.Tanh()
                 ).cuda()
             self.mlp_opacity.append(mlp_opacity)
             
-            # 协方差MLP
+            # 协方差MLP - 添加时间维度
             mlp_cov = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim, self.feat_dim),
+                    nn.Linear(self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim+time_input_dim, self.feat_dim),
                     nn.ReLU(True),
                     nn.Linear(self.feat_dim, 7*self.n_offsets),
                 ).cuda()
             self.mlp_cov.append(mlp_cov)
             
-            # 颜色MLP
+            # 颜色MLP - 添加时间维度
             mlp_color = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.color_dist_dim+self.level_dim+self.appearance_dim, self.feat_dim),
+                    nn.Linear(self.feat_dim+self.view_dim+self.color_dist_dim+self.level_dim+self.appearance_dim+time_input_dim, self.feat_dim),
                     nn.ReLU(True),
                     nn.Linear(self.feat_dim, 3*self.n_offsets),
                     nn.Sigmoid()
@@ -177,6 +203,12 @@ class GaussianModel:
             mlp.eval()
         for mlp in self.mlp_color:
             mlp.eval()
+        # ====================== 新增：时间编码器评估模式 ======================
+        if self.add_time:
+            for time_enc in self.time_encoder:
+                if time_enc is not None:
+                    time_enc.eval()
+        # ======================================================================
         if self.use_feat_bank:
             self.mlp_feature_bank.eval()
         if self.appearance_dim > 0:
@@ -189,10 +221,57 @@ class GaussianModel:
             mlp.train()
         for mlp in self.mlp_color:
             mlp.train()
+        # ====================== 新增：时间编码器训练模式 ======================
+        if self.add_time:
+            for time_enc in self.time_encoder:
+                if time_enc is not None:
+                    time_enc.train()
+        # ======================================================================
         if self.use_feat_bank:
             self.mlp_feature_bank.train()
         if self.appearance_dim > 0:
             self.embedding_appearance.train()
+            
+    # ====================== 新增：持续更新式建模相关方法 ======================
+    
+    def set_time(self, time: float):
+        """
+        设置当前时间戳，用于训练和渲染
+        参数:
+            time: 时间戳值（通常是训练迭代次数或归一化时间）
+        """
+        self.current_time = time
+        
+    def encode_time(self, region_idx: int, batch_size: int = 1):
+        """
+        为指定区域编码时间戳
+        参数:
+            region_idx: 区域索引
+            batch_size: 批次大小
+        返回:
+            编码后的时间特征 (batch_size, time_dim)
+        """
+        if not self.add_time or self.time_encoder[region_idx] is None:
+            return None
+        
+        # 构建时间张量 (batch_size, 1)
+        time_tensor = torch.tensor([[self.current_time]] * batch_size, 
+                                    dtype=torch.float32, device='cuda')
+        
+        # 通过时间编码器
+        time_feat = self.time_encoder[region_idx](time_tensor)
+        
+        return time_feat
+        
+    def get_time_encoder(self, region_idx: int):
+        """
+        获取指定区域的时间编码器
+        """
+        if not self.add_time or region_idx >= len(self.time_encoder):
+            return None
+        return self.time_encoder[region_idx]
+    
+    # ======================================================================
 
     def capture(self):
         return (
@@ -1377,32 +1456,43 @@ class GaussianModel:
 
     def save_mlp_checkpoints(self, path, mode = 'split'):#split or unite
         mkdir_p(os.path.dirname(path))
+        
+        # ====================== 新增：计算时间维度对输入维度的贡献 ======================
+        time_input_dim = self.time_dim if self.add_time else 0
+        # ==================================================================================
+        
         if mode == 'split':
             self.eval()
             # 检查是否是多区域MLP
             if hasattr(self, 'num_regions') and self.num_regions > 1:
                 # 为每个区域的MLP单独保存
                 for i in range(self.num_regions):
-                    # 保存opacity MLP
-                    opacity_mlp = torch.jit.trace(self.mlp_opacity[i], (torch.rand(1, self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim).cuda()))
+                    # ====================== 新增：保存时间编码器 ======================
+                    if self.add_time and self.time_encoder[i] is not None:
+                        time_enc = torch.jit.trace(self.time_encoder[i], (torch.rand(1, 1).cuda()))
+                        time_enc.save(os.path.join(path, f'time_encoder_{i}.pt'))
+                    # ==================================================================
+                    
+                    # 保存opacity MLP - 添加时间维度
+                    opacity_mlp = torch.jit.trace(self.mlp_opacity[i], (torch.rand(1, self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim+time_input_dim).cuda()))
                     opacity_mlp.save(os.path.join(path, f'opacity_mlp_{i}.pt'))
-                    # 保存cov MLP
-                    cov_mlp = torch.jit.trace(self.mlp_cov[i], (torch.rand(1, self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim).cuda()))
+                    # 保存cov MLP - 添加时间维度
+                    cov_mlp = torch.jit.trace(self.mlp_cov[i], (torch.rand(1, self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim+time_input_dim).cuda()))
                     cov_mlp.save(os.path.join(path, f'cov_mlp_{i}.pt'))
-                    # 保存color MLP
-                    color_mlp = torch.jit.trace(self.mlp_color[i], (torch.rand(1, self.feat_dim+self.view_dim+self.color_dist_dim+self.appearance_dim+self.level_dim).cuda()))
+                    # 保存color MLP - 添加时间维度
+                    color_mlp = torch.jit.trace(self.mlp_color[i], (torch.rand(1, self.feat_dim+self.view_dim+self.color_dist_dim+self.appearance_dim+self.level_dim+time_input_dim).cuda()))
                     color_mlp.save(os.path.join(path, f'color_mlp_{i}.pt'))
                     # 保存外观编码
                     if self.appearance_dim > 0 and self.embedding_appearance[i] is not None:
                         emd = torch.jit.trace(self.embedding_appearance[i], (torch.zeros((1,), dtype=torch.long).cuda()))
                         emd.save(os.path.join(path, f'embedding_appearance_{i}.pt'))
             else:
-                # 单区域情况
-                opacity_mlp = torch.jit.trace(self.mlp_opacity, (torch.rand(1, self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim).cuda()))
+                # 单区域情况 - 添加时间维度
+                opacity_mlp = torch.jit.trace(self.mlp_opacity, (torch.rand(1, self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim+time_input_dim).cuda()))
                 opacity_mlp.save(os.path.join(path, 'opacity_mlp.pt'))
-                cov_mlp = torch.jit.trace(self.mlp_cov, (torch.rand(1, self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim).cuda()))
+                cov_mlp = torch.jit.trace(self.mlp_cov, (torch.rand(1, self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim+time_input_dim).cuda()))
                 cov_mlp.save(os.path.join(path, 'cov_mlp.pt'))
-                color_mlp = torch.jit.trace(self.mlp_color, (torch.rand(1, self.feat_dim+self.view_dim+self.color_dist_dim+self.appearance_dim+self.level_dim).cuda()))
+                color_mlp = torch.jit.trace(self.mlp_color, (torch.rand(1, self.feat_dim+self.view_dim+self.color_dist_dim+self.appearance_dim+self.level_dim+time_input_dim).cuda()))
                 color_mlp.save(os.path.join(path, 'color_mlp.pt'))
                 if self.appearance_dim > 0:
                     emd = torch.jit.trace(self.embedding_appearance, (torch.zeros((1,), dtype=torch.long).cuda()))
@@ -1417,6 +1507,10 @@ class GaussianModel:
             param_dict['opacity_mlp'] = [mlp.state_dict() for mlp in self.mlp_opacity]
             param_dict['cov_mlp'] = [mlp.state_dict() for mlp in self.mlp_cov]
             param_dict['color_mlp'] = [mlp.state_dict() for mlp in self.mlp_color]
+            # ====================== 新增：保存时间编码器 ======================
+            if self.add_time:
+                param_dict['time_encoder'] = [enc.state_dict() if enc is not None else None for enc in self.time_encoder]
+            # ==================================================================
             if self.appearance_dim > 0:
                 param_dict['appearance'] = [emb.state_dict() for emb in self.embedding_appearance]
             if self.use_feat_bank:
@@ -1436,7 +1530,27 @@ class GaussianModel:
                 self.mlp_cov = ModuleList()
                 self.mlp_color = ModuleList()
                 self.embedding_appearance = ModuleList()
+                # ====================== 新增：时间编码器ModuleList ======================
+                if self.add_time:
+                    self.time_encoder = ModuleList()
+                # ======================================================================
                 for i in range(self.num_regions):
+                    # ====================== 新增：加载时间编码器 ======================
+                    if self.add_time and os.path.exists(os.path.join(path, f'time_encoder_{i}.pt')):
+                        self.time_encoder.append(torch.jit.load(os.path.join(path, f'time_encoder_{i}.pt')).cuda())
+                    elif self.add_time:
+                        # 如果时间编码器文件不存在，创建一个新的
+                        time_enc = nn.Sequential(
+                            nn.Linear(1, self.time_dim * 2),
+                            nn.ReLU(True),
+                            nn.Linear(self.time_dim * 2, self.time_dim),
+                            nn.ReLU(True)
+                        ).cuda()
+                        self.time_encoder.append(time_enc)
+                    else:
+                        self.time_encoder.append(None)
+                    # ==================================================================
+                    
                     # 加载opacity MLP
                     self.mlp_opacity.append(torch.jit.load(os.path.join(path, f'opacity_mlp_{i}.pt')).cuda())
                     # 加载cov MLP
@@ -1466,6 +1580,12 @@ class GaussianModel:
                 self.mlp_cov[i].load_state_dict(state_dict)
             for i, state_dict in enumerate(checkpoint['color_mlp']):
                 self.mlp_color[i].load_state_dict(state_dict)
+            # ====================== 新增：加载时间编码器 ======================
+            if self.add_time and 'time_encoder' in checkpoint:
+                for i, state_dict in enumerate(checkpoint['time_encoder']):
+                    if state_dict is not None and i < len(self.time_encoder):
+                        self.time_encoder[i].load_state_dict(state_dict)
+            # ==================================================================
             if self.appearance_dim > 0 and 'appearance' in checkpoint:
                 for i, state_dict in enumerate(checkpoint['appearance']):
                     self.embedding_appearance[i].load_state_dict(state_dict)

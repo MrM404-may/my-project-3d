@@ -86,13 +86,37 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
             feat[:,::1, :1]*bank_weight[:,:,2:]
         feat = feat.squeeze(dim=-1) # [n, c]
 
-    # 构建默认的输入张量
+    # ====================== 新增：获取时间戳编码 ======================
+    time_feat = None
+    if hasattr(pc, 'add_time') and pc.add_time:
+        # 编码当前区域的时间戳
+        time_encoder = pc.get_time_encoder(camera_region)
+        if time_encoder is not None:
+            # 构建时间张量 (batch_size, 1)
+            batch_size = anchor.shape[0]
+            time_tensor = torch.tensor([[pc.current_time]] * batch_size, 
+                                        dtype=torch.float32, device='cuda')
+            # 通过时间编码器
+            time_feat = time_encoder(time_tensor)
+    # ======================================================================
+    
+    # 构建默认的输入张量 - 添加时间特征
     if pc.add_level:
         cat_local_view = torch.cat([feat, ob_view, ob_dist, level], dim=1) # [N, c+3+1+1]
         cat_local_view_wodist = torch.cat([feat, ob_view, level], dim=1) # [N, c+3+1]
     else:
         cat_local_view = torch.cat([feat, ob_view, ob_dist], dim=1) # [N, c+3+1]
         cat_local_view_wodist = torch.cat([feat, ob_view], dim=1) # [N, c+3]
+    
+    # ====================== 新增：将时间特征拼接到输入中 ======================
+    if time_feat is not None:
+        # 确保时间特征的维度与锚点数量一致
+        if time_feat.shape[0] == 1 and anchor.shape[0] > 1:
+            time_feat = time_feat.repeat(anchor.shape[0], 1)
+        # 拼接时间特征
+        cat_local_view = torch.cat([cat_local_view, time_feat], dim=1)
+        cat_local_view_wodist = torch.cat([cat_local_view_wodist, time_feat], dim=1)
+    # ======================================================================
 
     if pc.appearance_dim > 0:
         if is_training or ape_code < 0: 
@@ -129,12 +153,15 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     # select opacity 
     opacity = neural_opacity[mask]
 
-    # get offset's color
+    # get offset's color - 处理外观编码输入也要包含时间特征
     if pc.appearance_dim > 0:
         if pc.add_color_dist:
-            color = pc.get_color_mlp(camera_region)(torch.cat([cat_local_view, appearance], dim=1))
+            # 确保外观编码输入包含时间特征
+            color_input = torch.cat([cat_local_view, appearance], dim=1)
+            color = pc.get_color_mlp(camera_region)(color_input)
         else:
-            color = pc.get_color_mlp(camera_region)(torch.cat([cat_local_view_wodist, appearance], dim=1))
+            color_input = torch.cat([cat_local_view_wodist, appearance], dim=1)
+            color = pc.get_color_mlp(camera_region)(color_input)
     else:
         if pc.add_color_dist:
             color = pc.get_color_mlp(camera_region)(cat_local_view)
@@ -147,7 +174,7 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         scale_rot = pc.get_cov_mlp(camera_region)(cat_local_view)
     else:
         scale_rot = pc.get_cov_mlp(camera_region)(cat_local_view_wodist)
-    scale_rot = scale_rot.reshape([anchor.shape[0]*pc.n_offsets, 7]) # [mask]
+    scale_rot = scale_rot.reshape([anchor.shape[0]*pc.n_offsets, 7])# [mask]
     
     # offsets
     offsets = grid_offsets.view([-1, 3]) # [mask]
