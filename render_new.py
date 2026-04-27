@@ -36,15 +36,13 @@ class Renderer:
             iteration: 迭代次数，默认-1
             white_background: 是否使用白色背景
         """
-        # 1. 创建ArgumentParser并初始化参数
+        # 1. 加载dataset配置（使用原始代码结构）
         from argparse import ArgumentParser
         parser = ArgumentParser()
+        model = ModelParams(parser, sentinel=True)
+        pipeline = PipelineParams(parser)
         
-        # 2. 初始化ModelParams和PipelineParams
-        self.dataset = ModelParams(parser, sentinel=True)
-        self.pipeline = PipelineParams(parser)
-        
-        # 3. 创建DummyArgs并设置参数
+        # 2. 创建args对象
         class DummyArgs:
             def __init__(self):
                 self.model_path = model_path
@@ -55,6 +53,7 @@ class Renderer:
                 self.random_background = False
                 self.data_device = "cuda"
                 self.eval = False
+                self.sh_degree = 3
                 self.feat_dim = 32
                 self.n_offsets = 10
                 self.fork = 4
@@ -76,16 +75,16 @@ class Renderer:
 
         args = DummyArgs()
         
-        # 4. 提取参数
-        self.dataset = self.dataset.extract(args)
-        self.pipeline = self.pipeline.extract(args)
+        # 3. 提取参数
+        self.dataset = model.extract(args)
+        self.pipeline = pipeline.extract(args)
         
-        # 5. 设置pipeline参数
+        # 4. 设置pipeline参数
         self.pipeline.convert_SHs_python = False
         self.pipeline.compute_cov3D_python = False
         self.pipeline.debug = False
 
-        # 3. 加载Gaussian模型
+        # 5. 加载Gaussian模型
         self.gaussians = GaussianModel(
             self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, False,  # Explicitly set use_feat_bank=False
             self.dataset.appearance_dim, self.dataset.add_opacity_dist, self.dataset.add_cov_dist,
@@ -116,7 +115,7 @@ class Renderer:
         
         self.gaussians.load_ply_sparse_gaussian(ply_path)
         
-        # 加载MLP checkpoint
+        # 6. 加载MLP checkpoint
         mlp_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}")
         if not os.path.exists(mlp_path):
             raise FileNotFoundError(f"MLP checkpoint directory not found at {mlp_path}")
@@ -124,11 +123,11 @@ class Renderer:
         
         self.gaussians.eval()
 
-        # 4. 设置背景
+        # 7. 设置背景
         bg_color = [1.0, 1.0, 1.0] if self.dataset.white_background else [0.0, 0.0, 0.0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        # 5. 加载cameras.json
+        # 8. 加载cameras.json
         if os.path.exists(cameras_json_path):
             with open(cameras_json_path, 'r', encoding='utf-8') as f:
                 self.cameras_json = json.load(f)
@@ -143,14 +142,14 @@ class Renderer:
         else:
             raise FileNotFoundError(f"cameras.json not found at {cameras_json_path}")
 
-        # 6. 加载cache.json
+        # 9. 加载cache.json
         if os.path.exists(cache_json_path):
             with open(cache_json_path, 'r', encoding='utf-8') as f:
                 self.cache_json = json.load(f)
         else:
             raise FileNotFoundError(f"cache.json not found at {cache_json_path}")
 
-        # 7. 加载regions_config.json
+        # 10. 加载regions_config.json
         if os.path.exists(regions_config_path):
             with open(regions_config_path, 'r', encoding='utf-8') as f:
                 self.regions_config = json.load(f)
