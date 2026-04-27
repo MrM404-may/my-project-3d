@@ -84,20 +84,46 @@ class Renderer:
         self.pipeline.compute_cov3D_python = False
         self.pipeline.debug = False
 
-        # 5. 使用Scene初始化加载模型（使用原始代码结构）
-        from scene import Scene
+        # 5. 直接加载Gaussian模型（绕过Scene的相机加载）
         from gaussian_renderer import GaussianModel
         
         print(f"Loading trained model at iteration {iteration}")
-        scene = Scene(self.dataset, GaussianModel(
+        self.gaussians = GaussianModel(
             self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank,
             self.dataset.appearance_dim, self.dataset.add_opacity_dist, self.dataset.add_cov_dist,
             self.dataset.add_color_dist, self.dataset.add_level, self.dataset.visible_threshold,
             self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
-        ), load_iteration=iteration, shuffle=False, resolution_scales=self.dataset.resolution_scales)
+        )
         
-        self.gaussians = scene.gaussians
-        self.iteration = scene.loaded_iter
+        # 直接加载模型文件，绕过Scene的相机加载
+        if iteration == -1:
+            # 查找最新的迭代
+            import glob
+            import os
+            iteration_dirs = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
+            if not iteration_dirs:
+                raise FileNotFoundError(f"No iteration directories found in {os.path.join(model_path, 'point_cloud')}")
+            iterations = [int(d.split('_')[-1]) for d in iteration_dirs]
+            self.iteration = max(iterations)
+        else:
+            self.iteration = iteration
+        
+        # 加载点云
+        ply_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}", "point_cloud.ply")
+        if not os.path.exists(ply_path):
+            # 尝试加载merged_anchors.ply
+            ply_path = os.path.join(model_path, "merged_anchors.ply")
+            if not os.path.exists(ply_path):
+                raise FileNotFoundError(f"No PLY file found at {ply_path}")
+        
+        self.gaussians.load_ply_sparse_gaussian(ply_path)
+        
+        # 加载MLP checkpoint
+        mlp_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}")
+        if not os.path.exists(mlp_path):
+            raise FileNotFoundError(f"MLP checkpoint directory not found at {mlp_path}")
+        self.gaussians.load_mlp_checkpoints(mlp_path)
+        
         self.gaussians.eval()
 
         # 6. 设置背景
