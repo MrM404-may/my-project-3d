@@ -50,6 +50,12 @@ class Renderer:
         # 保存原始命令行参数
         original_argv = sys.argv.copy()
         
+        # 创建参数解析器
+        parser = argparse.ArgumentParser(description="Testing script parameters")
+        model = ModelParams(parser, sentinel=True)
+        pipeline = PipelineParams(parser)
+        parser.add_argument("--iteration", default=-1, type=int)
+        
         # 临时设置命令行参数
         sys.argv = [
             "render9-huang.py",
@@ -57,11 +63,6 @@ class Renderer:
             "--source_path", data_path,
             "--iteration", str(iteration)
         ]
-        
-        # 创建参数解析器
-        parser = argparse.ArgumentParser(description="Testing script parameters")
-        model = ModelParams(parser, sentinel=True)
-        pipeline = PipelineParams(parser)
         
         # 获取完整的参数（包括从配置文件读取的）
         args = get_combined_args(parser)
