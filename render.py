@@ -50,7 +50,7 @@ class Renderer:
                 self.feat_dim = 32
                 self.n_offsets = 16
                 self.fork = 1
-                self.use_feat_bank = True
+                self.use_feat_bank = False
                 self.images = "images"
                 self.resolution = -1
                 self.white_background = False
