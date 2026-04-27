@@ -34,6 +34,7 @@ from gaussian_renderer import GaussianModel
 
 class Renderer:
     def __init__(self, model_path, data_path, iteration=-1, regions_config_path=None, cache_path=None, cameras_json_path=None):
+        import os
         self.model_path = model_path
         self.data_path = data_path
         self.iteration = iteration
