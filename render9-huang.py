@@ -184,6 +184,13 @@ class Renderer:
             view.R = R
             view.T = T
             
+            # 重新计算相机的位姿相关属性
+            from utils.graphics_utils import getWorld2View2, getProjectionMatrix
+            view.world_view_transform = torch.tensor(getWorld2View2(R, T, view.trans, view.scale)).transpose(0, 1).cuda()
+            view.projection_matrix = getProjectionMatrix(znear=view.znear, zfar=view.zfar, fovX=view.FoVx, fovY=view.FoVy).transpose(0,1).cuda()
+            view.full_proj_transform = (view.world_view_transform.unsqueeze(0).bmm(view.projection_matrix.unsqueeze(0))).squeeze(0)
+            view.camera_center = view.world_view_transform.inverse()[3, :3]
+            
             # 渲染单个视图
             self.render_set(dataset.model_path, "test", scene.loaded_iter, [view], gaussians, pipeline, background, show_level, ape_code)
     
