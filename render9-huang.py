@@ -151,6 +151,42 @@ class Renderer:
             with open(os.path.join(model_path, name, "ours_{}".format(iteration), "per_view_count_level.json"), 'w') as fp:
                 json.dump(per_view_level_dict, fp, indent=True)     
     
+    def render_set_one_view(self, dataset : ModelParams, iteration : int, pipeline : PipelineParams, R, T, show_level : bool, ape_code : int = 10):
+        with torch.no_grad():
+            gaussians = GaussianModel(
+                dataset.feat_dim, dataset.n_offsets, dataset.fork, dataset.use_feat_bank, dataset.appearance_dim, 
+                dataset.add_opacity_dist, dataset.add_cov_dist, dataset.add_color_dist, dataset.add_level, 
+                dataset.visible_threshold, dataset.dist2level, dataset.base_layer, dataset.progressive, dataset.extend
+            )
+            scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False, resolution_scales=dataset.resolution_scales)
+            gaussians.eval()
+            gaussians.plot_levels()
+            
+            if dataset.random_background:
+                bg_color = [np.random.random(),np.random.random(),np.random.random()] 
+            elif dataset.white_background:
+                bg_color = [1.0, 1.0, 1.0]
+            else:
+                bg_color = [0.0, 0.0, 0.0]
+            background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+            if not os.path.exists(dataset.model_path):
+                os.makedirs(dataset.model_path)
+            
+            # 获取一个测试相机作为模板
+            test_cameras = scene.getTestCameras()
+            if not test_cameras:
+                print("Error: No test cameras available")
+                return
+            
+            # 使用第一个相机作为模板
+            view = test_cameras[0]
+            # 设置相机的旋转矩阵和平移向量
+            view.R = R
+            view.T = T
+            
+            # 渲染单个视图
+            self.render_set(dataset.model_path, "test", scene.loaded_iter, [view], gaussians, pipeline, background, show_level, ape_code)
+    
     def render_sets(self, dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, show_level : bool, ape_code : int):
         with torch.no_grad():
             gaussians = GaussianModel(
@@ -194,6 +230,11 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, show_level : bool, ape_code : int):
     renderer = Renderer()
     renderer.render_sets(dataset, iteration, pipeline, skip_train, skip_test, show_level, ape_code)
+
+
+def render_set_one_view(dataset : ModelParams, iteration : int, pipeline : PipelineParams, R, T, show_level : bool, ape_code : int = 10):
+    renderer = Renderer()
+    renderer.render_set_one_view(dataset, iteration, pipeline, R, T, show_level, ape_code)
 
 
 if __name__ == "__main__":
