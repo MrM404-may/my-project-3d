@@ -98,11 +98,36 @@ class Renderer:
                 model.extract(args).visible_threshold, model.extract(args).dist2level, model.extract(args).base_layer, model.extract(args).progressive, model.extract(args).extend
             )
             
-            # 创建Scene对象 - 使用model_path中的cameras.json
-            scene = Scene(model.extract(args), self.gaussians, load_iteration=iteration, shuffle=False, resolution_scales=model.extract(args).resolution_scales)
+            # 直接加载模型（绕过Scene初始化）
+            if iteration == -1:
+                # 查找最新的迭代
+                import glob
+                iteration_dirs = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
+                if not iteration_dirs:
+                    raise FileNotFoundError(f"No iteration directories found in {os.path.join(model_path, 'point_cloud')}")
+                iterations = [int(d.split('_')[-1]) for d in iteration_dirs]
+                self.iteration = max(iterations)
+            else:
+                self.iteration = iteration
+            
+            # 加载点云
+            ply_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}", "point_cloud.ply")
+            if not os.path.exists(ply_path):
+                # 尝试加载merged_anchors.ply
+                ply_path = os.path.join(model_path, "merged_anchors.ply")
+                if not os.path.exists(ply_path):
+                    raise FileNotFoundError(f"No PLY file found at {ply_path}")
+            
+            self.gaussians.load_ply_sparse_gaussian(ply_path)
+            
+            # 加载MLP checkpoint
+            mlp_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}")
+            if not os.path.exists(mlp_path):
+                raise FileNotFoundError(f"MLP checkpoint directory not found at {mlp_path}")
+            self.gaussians.load_mlp_checkpoints(mlp_path)
+            
             self.gaussians.eval()
             self.gaussians.plot_levels()
-            self.iteration = scene.loaded_iter
             
             # 设置背景
             if model.extract(args).random_background:
