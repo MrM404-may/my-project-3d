@@ -365,7 +365,10 @@ class Renderer:
             # 将 R 和 T 转换为 numpy 数组
             R_np = np.array(R)
             T_np = np.array(T)
-            view.world_view_transform = torch.tensor(getWorld2View2(R_np, T_np, view.trans, view.scale)).transpose(0, 1).cuda()
+            
+            # 使用默认的 translate 和 scale 参数，而不是 view.trans 和 view.scale
+            # 这样可以确保计算结果只依赖于输入的 R 和 T
+            view.world_view_transform = torch.tensor(getWorld2View2(R_np, T_np)).transpose(0, 1).cuda()
             view.projection_matrix = getProjectionMatrix(znear=view.znear, zfar=view.zfar, fovX=view.FoVx, fovY=view.FoVy).transpose(0,1).cuda()
             view.full_proj_transform = (view.world_view_transform.unsqueeze(0).bmm(view.projection_matrix.unsqueeze(0))).squeeze(0)
             view.camera_center = view.world_view_transform.inverse()[3, :3]
