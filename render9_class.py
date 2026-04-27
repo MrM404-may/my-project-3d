@@ -32,18 +32,20 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 
 class Render9Huang:
-    def __init__(self, model_path, iteration=-1, resolution_scales=None, batch_size=1657, quiet=True):
+    def __init__(self, model_path, source_path="", iteration=-1, resolution_scales=None, batch_size=1657, quiet=True):
         """
         初始化Render9Huang类
         
         Args:
             model_path: 模型路径
+            source_path: 源数据路径
             iteration: 要加载的迭代次数，默认为-1（最新）
             resolution_scales: 分辨率缩放列表
             batch_size: 批量加载相机的大小
             quiet: 是否安静模式
         """
         self.model_path = model_path
+        self.source_path = source_path
         self.iteration = iteration
         self.resolution_scales = resolution_scales if resolution_scales else [1.0]
         self.batch_size = batch_size
@@ -58,6 +60,7 @@ class Render9Huang:
         class Args:
             def __init__(self):
                 self.model_path = model_path
+                self.source_path = source_path
                 self.iteration = iteration
                 self.skip_train = False
                 self.skip_test = False
@@ -130,10 +133,16 @@ class Render9Huang:
         
         # 默认路径
         if regions_config_path is None:
-            regions_config_path = f"/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma3w/regions_config.json"
+            if self.source_path:
+                regions_config_path = os.path.join(self.source_path, "regions_config.json")
+            else:
+                regions_config_path = f"/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma3w/regions_config.json"
         
         if cache_path is None:
-            cache_path = f"/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma3w/cache.json"
+            if self.source_path:
+                cache_path = os.path.join(self.source_path, "cache.json")
+            else:
+                cache_path = f"/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma3w/cache.json"
         
         if os.path.exists(regions_config_path):
             with open(regions_config_path, 'r', encoding='utf-8') as f:
@@ -314,6 +323,7 @@ def main():
     # 创建Render9Huang实例
     renderer = Render9Huang(
         model_path=args.model_path,
+        source_path=getattr(args, 'source_path', ''),
         iteration=args.iteration,
         resolution_scales=args.resolution_scales,
         quiet=args.quiet
