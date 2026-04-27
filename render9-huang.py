@@ -313,17 +313,17 @@ class Renderer:
             with open(os.path.join(model_path, name, "ours_{}".format(iteration), "per_view_count_level.json"), 'w') as fp:
                 json.dump(per_view_level_dict, fp, indent=True)     
     
-    def render_set_one_view(self, R, T, show_level : bool = False, ape_code : int = None):
+    def render_set_one_view(self, rotation_w, p_w, show_level : bool = False, ape_code : int = None):
         """
-        渲染单个视图，只需要输入旋转矩阵 R 和平移向量 T
-        R: 旋转矩阵
-        T: 平移向量
+        渲染单个视图，只需要输入旋转矩阵 rotation_w 和平移向量 p_w
+        rotation_w: 相机到世界的旋转矩阵
+        p_w: 相机在世界坐标系中的位置
         show_level: 是否显示不同层级
         ape_code: 外观编码（如果为 None，则自动从相似相机中获取）
         """
         with torch.no_grad():
             # 找到最相似的相机
-            _, camera_region, auto_ape_code = self.find_similar_camera(R, T)
+            _, camera_region, auto_ape_code = self.find_similar_camera(rotation_w, p_w)
             
             # 使用找到的 ape_code 或默认值
             final_ape_code = ape_code if ape_code is not None else auto_ape_code
@@ -354,19 +354,19 @@ class Renderer:
                     return
             
             # 设置相机的旋转矩阵和平移向量
-            view.R = R
-            view.T = T
+            view.R = rotation_w
+            view.T = p_w
             # 设置相机的区域信息
             view.camera_region = camera_region
             
             # 重新计算相机的位姿相关属性
             import numpy as np
             from utils.graphics_utils import getWorld2View2, getProjectionMatrix
-            # 将 R 和 T 转换为 numpy 数组
-            R_np = np.array(R)
-            T_np = np.array(T)
+            # 将 rotation_w 和 p_w 转换为 numpy 数组
+            R_np = np.array(rotation_w)
+            T_np = np.array(p_w)
             
-            # 直接设置相机的位置为输入的 T
+            # 直接设置相机的位置为输入的 p_w
             view.camera_center = torch.tensor(T_np, dtype=torch.float32, device="cuda")
             
             # 构建世界到视图的变换矩阵
