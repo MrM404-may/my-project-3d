@@ -91,6 +91,13 @@ class Renderer:
         self.gaussians.eval()
         self.gaussians.plot_levels()
         
+        # 打印锚点的region属性信息
+        print(f"锚点总数: {self.gaussians._anchor.shape[0]}")
+        print(f"锚点region唯一值: {torch.unique(self.gaussians._region)}")
+        for region_val in torch.unique(self.gaussians._region):
+            count = (self.gaussians._region == region_val).sum().item()
+            print(f"  region {region_val.item()}: {count} 个锚点")
+        
         # 初始化背景
         if self.dataset.random_background:
             bg_color = [np.random.random(),np.random.random(),np.random.random()] 

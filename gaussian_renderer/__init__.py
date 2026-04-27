@@ -45,8 +45,15 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     if visible_mask is None:
         visible_mask = torch.ones(pc.get_anchor.shape[0], dtype=torch.bool, device = pc.get_anchor.device)
 
+    # 打印调试信息
+    print(f"generate_neural_gaussians: visible_mask 数量: {visible_mask.sum().item()}, camera_region: {camera_region}")
+    print(f"generate_neural_gaussians: 所有锚点的 region 值: {torch.unique(pc._region)}")
+
     # 获取锚点的region属性
     region = pc._region[visible_mask]
+    
+    # 打印 visible_mask 后的 region 值
+    print(f"generate_neural_gaussians: visible_mask 后的 region 值: {torch.unique(region)}")
     
     # 如果 camera_region 为 -1，使用所有锚点
     if camera_region == -1:
@@ -55,6 +62,7 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     else:
         # 过滤出属于当前相机区域的锚点
         region_mask = (region == camera_region)
+        print(f"generate_neural_gaussians: region == {camera_region} 的数量: {region_mask.sum().item()}")
         if region_mask.sum() == 0:
             print("None")
             # 如果没有属于当前区域的锚点，返回空
