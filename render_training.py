@@ -17,14 +17,24 @@ def main():
     
     args = parser.parse_args()
     
+    print(f"Model path: {args.model_path}")
+    print(f"Source path: {args.source_path}")
+    print(f"Camera IDs: {args.camera_ids}")
+    print(f"Output dir: {args.output_dir}")
+    
     # Initialize renderer
     print("Initializing renderer...")
     renderer = Renderer(
         model_path=args.model_path,
         source_path=args.source_path
     )
+    print("Created Renderer instance")
+    print("Calling render_init...")
     renderer.render_init()
+    print("render_init completed")
     print("Initialization completed.")
+    print(f"Number of cameras loaded: {len(renderer.camera_uids)}")
+    print(f"Camera dict keys: {list(renderer.camera_dict.keys())[:5]}...")
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
