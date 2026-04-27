@@ -54,14 +54,17 @@ class CameraPoseCalculator:
         # 创建默认参数
         class Args:
             def __init__(self):
-                self.model_path = self.model_path
-                self.iteration = self.iteration
+                self.model_path = None
+                self.iteration = None
                 self.quiet = True
+                self.source_path = None
         
         # 这里需要使用正确的作用域
         args = Args()
         args.model_path = self.model_path
         args.iteration = self.iteration
+        # 设置source_path为model_path，确保Scene正确初始化
+        args.source_path = self.model_path
         
         self.model_params = model.extract(args)
         
