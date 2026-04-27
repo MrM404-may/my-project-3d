@@ -1,14 +1,20 @@
 
 import os
+from os import makedirs
 import torch
 import numpy as np
+import subprocess
 import json
+import time
 from scene import Scene
 from gaussian_renderer import render, prefilter_voxel
+import torchvision
+from tqdm import tqdm
+from utils.general_utils import safe_state
+from argparse import ArgumentParser
+from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 from scene.cameras import Camera, MiniCam
-from utils.general_utils import safe_state
-from arguments import ModelParams, PipelineParams
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 
 
@@ -36,13 +42,18 @@ class Renderer:
             iteration: 迭代次数，默认-1
             white_background: 是否使用白色背景
         """
-        # 1. 加载dataset配置（使用原始代码结构）
-        from argparse import ArgumentParser
+        # 1. 设置CUDA设备（复制自render9-huang.py）
+        cmd = 'nvidia-smi -q -d Memory |grep -A4 GPU|grep Used'
+        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE).stdout.decode().split('\n')
+        os.environ['CUDA_VISIBLE_DEVICES']=str(np.argmin([int(x.split()[2]) for x in result[:-1]]))
+        os.system('echo $CUDA_VISIBLE_DEVICES')
+
+        # 2. 加载dataset配置（使用原始代码结构）
         parser = ArgumentParser()
         model = ModelParams(parser, sentinel=True)
         pipeline = PipelineParams(parser)
         
-        # 2. 创建args对象
+        # 3. 创建args对象
         class DummyArgs:
             def __init__(self):
                 self.model_path = model_path
@@ -75,62 +86,82 @@ class Renderer:
 
         args = DummyArgs()
         
-        # 3. 提取参数
+        # 4. 提取参数
         self.dataset = model.extract(args)
         self.pipeline = pipeline.extract(args)
         
-        # 4. 设置pipeline参数
-        self.pipeline.convert_SHs_python = False
-        self.pipeline.compute_cov3D_python = False
-        self.pipeline.debug = False
+        # 5. 初始化系统状态
+        safe_state(False)
 
-        # 5. 直接加载Gaussian模型（绕过Scene的相机加载）
-        from gaussian_renderer import GaussianModel
-        
+        # 6. 加载Gaussian模型（使用原始代码结构）
         print(f"Loading trained model at iteration {iteration}")
         self.gaussians = GaussianModel(
-            self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank,
-            self.dataset.appearance_dim, self.dataset.add_opacity_dist, self.dataset.add_cov_dist,
-            self.dataset.add_color_dist, self.dataset.add_level, self.dataset.visible_threshold,
-            self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
+            self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank, self.dataset.appearance_dim,
+            self.dataset.add_opacity_dist, self.dataset.add_cov_dist, self.dataset.add_color_dist, self.dataset.add_level,
+            self.dataset.visible_threshold, self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
         )
         
-        # 直接加载模型文件，绕过Scene的相机加载
-        if iteration == -1:
-            # 查找最新的迭代
-            import glob
-            import os
-            iteration_dirs = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
-            if not iteration_dirs:
-                raise FileNotFoundError(f"No iteration directories found in {os.path.join(model_path, 'point_cloud')}")
-            iterations = [int(d.split('_')[-1]) for d in iteration_dirs]
-            self.iteration = max(iterations)
-        else:
-            self.iteration = iteration
-        
-        # 加载点云
-        ply_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}", "point_cloud.ply")
-        if not os.path.exists(ply_path):
-            # 尝试加载merged_anchors.ply
-            ply_path = os.path.join(model_path, "merged_anchors.ply")
-            if not os.path.exists(ply_path):
-                raise FileNotFoundError(f"No PLY file found at {ply_path}")
-        
-        self.gaussians.load_ply_sparse_gaussian(ply_path)
-        
-        # 加载MLP checkpoint
-        mlp_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}")
-        if not os.path.exists(mlp_path):
-            raise FileNotFoundError(f"MLP checkpoint directory not found at {mlp_path}")
-        self.gaussians.load_mlp_checkpoints(mlp_path)
-        
+        # 7. 创建Scene对象（复制自render9-huang.py）
+        scene = Scene(self.dataset, self.gaussians, load_iteration=iteration, shuffle=False, resolution_scales=self.dataset.resolution_scales)
         self.gaussians.eval()
+        self.gaussians.plot_levels()
+        self.iteration = scene.loaded_iter
 
-        # 6. 设置背景
-        bg_color = [1.0, 1.0, 1.0] if self.dataset.white_background else [0.0, 0.0, 0.0]
+        # 8. 设置背景
+        if self.dataset.random_background:
+            bg_color = [np.random.random(), np.random.random(), np.random.random()]
+        elif self.dataset.white_background:
+            bg_color = [1.0, 1.0, 1.0]
+        else:
+            bg_color = [0.0, 0.0, 0.0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        # 7. 加载cameras.json
+        # 9. 确保模型路径存在
+        if not os.path.exists(self.dataset.model_path):
+            os.makedirs(self.dataset.model_path)
+
+        # 10. 加载区域配置和相机ID到区域的映射（复制自render9-huang.py）
+        if os.path.exists(regions_config_path):
+            with open(regions_config_path, 'r', encoding='utf-8') as f:
+                self.regions_config = json.load(f)
+            
+            # 加载相机ID到区域的映射
+            if os.path.exists(cache_json_path):
+                with open(cache_json_path, 'r', encoding='utf-8') as f:
+                    camera_info_dict = json.load(f)
+
+                # 核心匹配逻辑
+                print("===== 开始匹配相机与区域 =====")
+                for cam_id, cam_data in camera_info_dict.items():
+                    if cam_id not in self.camera_id_to_region:
+                        for region_idx, region in enumerate(self.regions_config):
+                            region_name = region['name']
+                            if cam_data['in_regions'].get(region_name, False) and (int(cam_id) < int(region['max_id'])):
+                                self.camera_id_to_region[cam_id] = region_idx
+                                break
+                 
+                # 统计各区域详情
+                print("\n===== 各区域详细信息统计表 =====")
+                region_stats = {i: [0, -1] for i in range(len(self.regions_config))}
+                for cam_id, region_idx in self.camera_id_to_region.items():
+                    cam = int(cam_id)
+                    region_stats[region_idx][0] += 1
+                    if cam > region_stats[region_idx][1]:
+                        region_stats[region_idx][1] = cam
+
+                print(f"{'区域名称':<12} | {'索引':<4} | {'实际最大CamID':<12} | {'匹配相机数':<8}")
+                print("-" * 70)
+                for region_idx, region in enumerate(self.regions_config):
+                    count, real_max = region_stats[region_idx]
+                    if real_max == -1:
+                        real_max = "无"
+                    print(f"{region['name']:<12} | {region_idx:<4} | {real_max:<12} | {count:<8}")
+            else:
+                print(f"错误：缓存文件不存在！路径：{cache_json_path}")
+        else:
+            print(f"错误：区域配置文件不存在！路径：{regions_config_path}")
+
+        # 11. 加载cameras.json
         if os.path.exists(cameras_json_path):
             with open(cameras_json_path, 'r', encoding='utf-8') as f:
                 self.cameras_json = json.load(f)
@@ -144,29 +175,6 @@ class Renderer:
                 self.cameras_json = cameras_dict
         else:
             raise FileNotFoundError(f"cameras.json not found at {cameras_json_path}")
-
-        # 8. 加载cache.json
-        if os.path.exists(cache_json_path):
-            with open(cache_json_path, 'r', encoding='utf-8') as f:
-                self.cache_json = json.load(f)
-        else:
-            raise FileNotFoundError(f"cache.json not found at {cache_json_path}")
-
-        # 9. 加载regions_config.json
-        if os.path.exists(regions_config_path):
-            with open(regions_config_path, 'r', encoding='utf-8') as f:
-                self.regions_config = json.load(f)
-            
-            # 构建camera_id_to_region映射
-            for cam_id, cam_data in self.cache_json.items():
-                if cam_id not in self.camera_id_to_region:
-                    for region_idx, region in enumerate(self.regions_config):
-                        region_name = region['name']
-                        if cam_data['in_regions'].get(region_name, False) and (int(cam_id) < int(region['max_id'])):
-                            self.camera_id_to_region[cam_id] = region_idx
-                            break
-        else:
-            raise FileNotFoundError(f"regions_config.json not found at {regions_config_path}")
 
         print("✅ Renderer initialized successfully!")
 
