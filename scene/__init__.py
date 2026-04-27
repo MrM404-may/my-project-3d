@@ -100,12 +100,16 @@ class Scene:
                                                                "point_cloud.ply"))
             
             # 直接使用原始保存路径下的多个PT文件
-            print("Using regular MLP checkpoints")
-            self.gaussians.load_mlp_checkpoints(os.path.join(self.model_path,
-                                                           "point_cloud",
-                                                           "iteration_" + str(self.loaded_iter)))
-            print("Load Voxel Size: ", self.gaussians.voxel_size)
-            print("Load Standard Dist: ", self.gaussians.standard_dist)
+            try:
+                print("Using regular MLP checkpoints")
+                self.gaussians.load_mlp_checkpoints(os.path.join(self.model_path,
+                                                               "point_cloud",
+                                                               "iteration_" + str(self.loaded_iter)))
+                print("Load Voxel Size: ", self.gaussians.voxel_size)
+                print("Load Standard Dist: ", self.gaussians.standard_dist)
+            except Exception as e:
+                print(f"Warning: Failed to load MLP checkpoints: {e}")
+                print("Continuing without MLP checkpoints")
         else:
             if args.random_background:
                 logger.info("Using random background")
