@@ -7,17 +7,50 @@ This guide explains how to use the new `render.py` file and its accompanying scr
 The `render.py` file contains a `Renderer` class with three main functionalities:
 
 1. **render_init()**: Initializes the renderer, loads the model, cameras.json, and cache.json
-2. **render_new(position, rotation, output_path)**: Renders a custom viewpoint given position (xyz) and rotation (quaternion)
+2. **render_new(position, rotation, output_path)**: Renders a **custom viewpoint** given position (xyz) and rotation (quaternion)
 3. **render_training_camera(camera_id, output_path)**: Renders a specific training camera by ID from cameras.json
 
 ## Files Included
 
 - [`render.py`](file:///workspace/render.py) - Main renderer class
-- [`test_render.py`](file:///workspace/test_render.py) - Test script demonstrating all functionality
+- [`render_custom.py`](file:///workspace/render_custom.py) - Command-line script for custom viewpoints
 - [`render_training.py`](file:///workspace/render_training.py) - Command-line script to render training cameras
 - [`render_example_views.py`](file:///workspace/render_example_views.py) - Example script to render cameras 22, 23, 24
+- [`test_render.py`](file:///workspace/test_render.py) - Test script demonstrating all functionality
 
-## Quick Start
+---
+
+## Quick Start: Custom Viewpoints
+
+### Render a Single Custom Viewpoint
+
+```bash
+python render_custom.py \
+    --model-path /root/autodl-tmp/Octree-GS/Octree-GS/output/Ma0422 \
+    --source-path /root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422 \
+    --position 0.0 0.0 0.0 \
+    --rotation 1.0 0.0 0.0 0.0
+```
+
+Parameters:
+- `--position`: Camera position in 3D space [x, y, z]
+- `--rotation`: Camera orientation as quaternion [w, x, y, z]
+- `--output`: Path to save the rendered image
+
+### Run Custom Viewpoint Demo
+
+```bash
+python render_custom.py \
+    --model-path /root/autodl-tmp/Octree-GS/Octree-GS/output/Ma0422 \
+    --source-path /root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422 \
+    --demo
+```
+
+This renders 4 different custom viewpoints and saves them to `./outputs/custom_demo/`.
+
+---
+
+## Quick Start: Training Viewpoints
 
 ### Option 1: Using the Example Script
 
@@ -49,7 +82,9 @@ python render_training.py \
     --all
 ```
 
-### Option 3: Using the Renderer Class Directly
+---
+
+## Using the Renderer Class Directly in Python
 
 You can also use the Renderer class in your own Python code:
 
@@ -65,14 +100,28 @@ renderer = Renderer(
 # Load the model and initialize
 renderer.render_init()
 
-# Render a training camera
-renderer.render_training_camera(22, "./output.png")
-
-# Or render a custom viewpoint
+# --- Option 1: Render a custom viewpoint ---
 position = [0.0, 0.0, 0.0]  # xyz
 rotation = [1.0, 0.0, 0.0, 0.0]  # quaternion [w, x, y, z]
 renderer.render_new(position, rotation, "./custom_view.png")
+
+# --- Option 2: Render a training camera ---
+renderer.render_training_camera(22, "./training_camera_22.png")
 ```
+
+---
+
+## Quaternion Reference
+
+Common quaternions for rotations:
+
+- Identity (no rotation): `[1.0, 0.0, 0.0, 0.0]`
+- 90° around X-axis: `[0.7071, 0.7071, 0.0, 0.0]`
+- 90° around Y-axis: `[0.7071, 0.0, 0.7071, 0.0]`
+- 90° around Z-axis: `[0.7071, 0.0, 0.0, 0.7071]`
+- 45° around Y-axis: `[0.9239, 0.0, 0.3827, 0.0]`
+
+---
 
 ## cameras.json Format
 
@@ -95,9 +144,11 @@ The code expects cameras.json in the following format:
 ]
 ```
 
+---
+
 ## Notes
 
-- The renderer automatically finds the most similar camera for custom viewpoints
-- It uses the region and APE code from the most similar training camera
+- Custom viewpoints automatically find the most similar training camera
+- The renderer uses the region and APE code from the most similar training camera
 - The code supports both quaternion (for custom views) and 3x3 rotation matrix (for training views) formats
 - All rendered images are clamped to [0, 1] before saving
