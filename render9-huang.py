@@ -252,6 +252,15 @@ class Renderer:
                 # 否则从相机ID映射中获取
                 camera_region = self.camera_id_to_region.get(str(getattr(view, 'uid', '')), 0)
             
+            # 检查当前区域是否有锚点
+            region_anchors = (gaussians._region == camera_region).sum().item()
+            print(f"正在渲染视图 {idx}, 相机ID: {getattr(view, 'uid', 'N/A')}, 区域: {camera_region}, APE代码: {ape_code}, 锚点数量: {region_anchors}")
+            
+            # 如果当前区域没有锚点，使用所有锚点（设置为区域 -1）
+            if region_anchors == 0:
+                print("⚠️  当前区域没有锚点，使用所有锚点")
+                camera_region = -1
+            
             if hasattr(camera_region, '__len__') and len(camera_region) > 2:
                 print(f"Warning: Camera {view.uid} has multiple region matches: {camera_region}. Using the first match.")
             torch.cuda.synchronize(); t0 = time.time()
