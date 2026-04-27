@@ -36,7 +36,15 @@ class Renderer:
             iteration: 迭代次数，默认-1
             white_background: 是否使用白色背景
         """
-        # 1. 加载dataset配置（这里简单初始化，后续可完善）
+        # 1. 创建ArgumentParser并初始化参数
+        from argparse import ArgumentParser
+        parser = ArgumentParser()
+        
+        # 2. 初始化ModelParams和PipelineParams
+        self.dataset = ModelParams(parser, sentinel=True)
+        self.pipeline = PipelineParams(parser)
+        
+        # 3. 创建DummyArgs并设置参数
         class DummyArgs:
             def __init__(self):
                 self.model_path = model_path
@@ -47,7 +55,7 @@ class Renderer:
                 self.data_device = "cuda"
                 self.eval = False
                 self.sh_degree = 3
-                self.feature_dim = 32
+                self.feat_dim = 32
                 self.n_offsets = 10
                 self.fork = 4
                 self.use_feat_bank = True
@@ -57,40 +65,19 @@ class Renderer:
                 self.add_color_dist = False
                 self.add_level = False
                 self.visible_threshold = 3
-                self.dist2level = False
-                self.base_layer = False
+                self.dist2level = 'round'
+                self.base_layer = -1
                 self.progressive = False
-                self.extend = False
+                self.extend = 1.1
                 self.resolution_scales = [1.0]
 
-        self.dataset = ModelParams(None)
         args = DummyArgs()
-        self.dataset.model_path = args.model_path
-        self.dataset.source_path = args.source_path
-        self.dataset.images = args.images
-        self.dataset.resolution = args.resolution
-        self.dataset.white_background = args.white_background
-        self.dataset.data_device = args.data_device
-        self.dataset.eval = args.eval
-        self.dataset.sh_degree = args.sh_degree
-        self.dataset.feat_dim = args.feature_dim
-        self.dataset.n_offsets = args.n_offsets
-        self.dataset.fork = args.fork
-        self.dataset.use_feat_bank = args.use_feat_bank
-        self.dataset.appearance_dim = args.appearance_dim
-        self.dataset.add_opacity_dist = args.add_opacity_dist
-        self.dataset.add_cov_dist = args.add_cov_dist
-        self.dataset.add_color_dist = args.add_color_dist
-        self.dataset.add_level = args.add_level
-        self.dataset.visible_threshold = args.visible_threshold
-        self.dataset.dist2level = args.dist2level
-        self.dataset.base_layer = args.base_layer
-        self.dataset.progressive = args.progressive
-        self.dataset.extend = args.extend
-        self.dataset.resolution_scales = args.resolution_scales
-
-        # 2. 初始化pipeline参数
-        self.pipeline = PipelineParams(None)
+        
+        # 4. 提取参数
+        self.dataset = self.dataset.extract(args)
+        self.pipeline = self.pipeline.extract(args)
+        
+        # 5. 设置pipeline参数
         self.pipeline.convert_SHs_python = False
         self.pipeline.compute_cov3D_python = False
         self.pipeline.debug = False
