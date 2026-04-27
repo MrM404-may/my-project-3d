@@ -55,8 +55,7 @@ class Renderer:
                 self.random_background = False
                 self.data_device = "cuda"
                 self.eval = False
-                self.sh_degree = 3
-                self.feature_dim = 32
+                self.feat_dim = 32
                 self.n_offsets = 10
                 self.fork = 4
                 self.use_feat_bank = True
