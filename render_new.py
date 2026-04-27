@@ -1,12 +1,28 @@
 
+#
+# Copyright (C) 2023, Inria
+# GRAPHDECO research group, https://team.inria.fr/graphdeco
+# All rights reserved.
+#
+# This software is free for non-commercial, research and evaluation use 
+# under the terms of the LICENSE.md file.
+#
+# For inquiries contact  george.drettakis@inria.fr
+#
 import os
 from os import makedirs
 import torch
 import numpy as np
+
 import subprocess
+cmd = 'nvidia-smi -q -d Memory |grep -A4 GPU|grep Used'
+result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE).stdout.decode().split('\n')
+os.environ['CUDA_VISIBLE_DEVICES']=str(np.argmin([int(x.split()[2]) for x in result[:-1]]))
+os.system('echo $CUDA_VISIBLE_DEVICES')
+
+from scene import Scene
 import json
 import time
-from scene import Scene
 from gaussian_renderer import render, prefilter_voxel
 import torchvision
 from tqdm import tqdm
@@ -42,121 +58,117 @@ class Renderer:
             iteration: 迭代次数，默认-1
             white_background: 是否使用白色背景
         """
-        # 1. 设置CUDA设备（复制自render9-huang.py）
-        cmd = 'nvidia-smi -q -d Memory |grep -A4 GPU|grep Used'
-        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE).stdout.decode().split('\n')
-        os.environ['CUDA_VISIBLE_DEVICES']=str(np.argmin([int(x.split()[2]) for x in result[:-1]]))
-        os.system('echo $CUDA_VISIBLE_DEVICES')
-
-        # 2. 加载dataset配置（完全复制自render9-huang.py）
-        parser = ArgumentParser(description="Testing script parameters")
-        model = ModelParams(parser, sentinel=True)
-        pipeline = PipelineParams(parser)
-        parser.add_argument("--iteration", default=-1, type=int)
-        parser.add_argument("--ape", default=10, type=int)
-        parser.add_argument("--skip_train", action="store_true")
-        parser.add_argument("--skip_test", action="store_true")
-        parser.add_argument("--quiet", action="store_true")
-        parser.add_argument("--show_level", action="store_true")
-        
-        # 3. 构建命令行参数
-        import sys
-        sys.argv = [
-            "render_new.py",
-            "-m", model_path,
-            "-s", model_path,
-            "--iteration", str(iteration),
-            "--ape", "10"
-        ]
-        if white_background:
-            sys.argv.append("--white_background")
-        
-        # 4. 获取组合参数（完全复制自render9-huang.py）
-        args = get_combined_args(parser)
-        print("Rendering " + args.model_path)
-
-        # 5. 提取参数
-        self.dataset = model.extract(args)
-        self.pipeline = pipeline.extract(args)
-        
-        # 6. 初始化系统状态
-        safe_state(False)
-
-        # 7. 加载Gaussian模型（使用与render9-huang.py相同的方式）
-        print(f"Loading trained model at iteration {iteration}")
-        self.gaussians = GaussianModel(
-            self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank, self.dataset.appearance_dim,
-            self.dataset.add_opacity_dist, self.dataset.add_cov_dist, self.dataset.add_color_dist, self.dataset.add_level,
-            self.dataset.visible_threshold, self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
-        )
-        
-        # 8. 创建Scene对象（使用与render9-huang.py相同的方式）
-        # 注意：这里我们需要确保cameras.json文件格式正确
-        # 临时创建一个符合Scene预期格式的cameras.json文件
-        import tempfile
-        import shutil
-        
-        # 保存原始cameras.json文件
-        original_cameras_json = os.path.join(args.source_path, "cameras.json")
-        temp_cameras_json = None
-        
-        try:
-            # 读取原始cameras.json文件
-            with open(original_cameras_json, 'r', encoding='utf-8') as f:
-                cameras_data = json.load(f)
+        # 完全复制自render9-huang.py的初始化过程
+        with torch.no_grad():
+            # 加载dataset配置
+            parser = ArgumentParser(description="Testing script parameters")
+            model = ModelParams(parser, sentinel=True)
+            pipeline = PipelineParams(parser)
+            parser.add_argument("--iteration", default=-1, type=int)
+            parser.add_argument("--ape", default=10, type=int)
+            parser.add_argument("--skip_train", action="store_true")
+            parser.add_argument("--skip_test", action="store_true")
+            parser.add_argument("--quiet", action="store_true")
+            parser.add_argument("--show_level", action="store_true")
             
-            # 检查格式是否为列表
-            if isinstance(cameras_data, list):
-                # 创建临时cameras.json文件，添加"frames"键
+            # 构建命令行参数
+            import sys
+            sys.argv = [
+                "render_new.py",
+                "-m", model_path,
+                "-s", model_path,
+                "--iteration", str(iteration),
+                "--ape", "10"
+            ]
+            if white_background:
+                sys.argv.append("--white_background")
+            
+            # 获取组合参数
+            args = get_combined_args(parser)
+            print("Rendering " + args.model_path)
+
+            # 初始化系统状态
+            safe_state(args.quiet)
+
+            # 加载Gaussian模型
+            print(f"Loading trained model at iteration {iteration}")
+            self.gaussians = GaussianModel(
+                model.extract(args).feat_dim, model.extract(args).n_offsets, model.extract(args).fork, model.extract(args).use_feat_bank, model.extract(args).appearance_dim,
+                model.extract(args).add_opacity_dist, model.extract(args).add_cov_dist, model.extract(args).add_color_dist, model.extract(args).add_level,
+                model.extract(args).visible_threshold, model.extract(args).dist2level, model.extract(args).base_layer, model.extract(args).progressive, model.extract(args).extend
+            )
+            
+            # 创建Scene对象
+            # 注意：Scene初始化需要cameras.json文件有特定格式，我们需要创建一个临时文件
+            import tempfile
+            import shutil
+            
+            # 保存原始source_path
+            original_source_path = model.extract(args).source_path
+            temp_dir = None
+            
+            try:
+                # 读取原始cameras.json文件
+                original_cameras_json = os.path.join(args.source_path, "cameras.json")
+                with open(original_cameras_json, 'r', encoding='utf-8') as f:
+                    cameras_data = json.load(f)
+                
+                # 创建临时目录和cameras.json文件
                 temp_dir = tempfile.mkdtemp()
                 temp_cameras_json = os.path.join(temp_dir, "cameras.json")
                 
                 # 构建符合Scene预期格式的JSON数据
-                scene_cameras_data = {
-                    "camera_angle_x": 0.6911112070278503,  # 默认值
-                    "frames": cameras_data
-                }
+                if isinstance(cameras_data, list):
+                    # 为每个相机添加file_path字段
+                    for i, cam in enumerate(cameras_data):
+                        cam["file_path"] = f"images/{cam.get('img_name', f'{i:06d}')}"
+                    
+                    # 构建完整的格式
+                    scene_cameras_data = {
+                        "camera_angle_x": 0.6911112070278503,  # 默认值
+                        "frames": cameras_data
+                    }
+                else:
+                    scene_cameras_data = cameras_data
                 
                 # 写入临时文件
                 with open(temp_cameras_json, 'w', encoding='utf-8') as f:
                     json.dump(scene_cameras_data, f)
                 
-                # 临时替换source_path为临时目录
-                original_source_path = self.dataset.source_path
-                self.dataset.source_path = temp_dir
-            
-            # 创建Scene对象
-            scene = Scene(self.dataset, self.gaussians, load_iteration=iteration, shuffle=False, resolution_scales=self.dataset.resolution_scales)
+                # 临时替换source_path
+                import types
+                temp_args = types.SimpleNamespace(**vars(args))
+                temp_args.source_path = temp_dir
+                
+                # 创建Scene对象
+                scene = Scene(model.extract(temp_args), self.gaussians, load_iteration=iteration, shuffle=False, resolution_scales=model.extract(temp_args).resolution_scales)
+                
+            finally:
+                # 清理临时目录
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
             self.gaussians.eval()
             self.gaussians.plot_levels()
             self.iteration = scene.loaded_iter
             
-            # 恢复原始source_path
-            if temp_cameras_json:
-                self.dataset.source_path = original_source_path
-                # 清理临时目录
-                shutil.rmtree(temp_dir)
-                
-        except Exception as e:
-            # 清理临时目录
-            if temp_cameras_json and os.path.exists(os.path.dirname(temp_cameras_json)):
-                shutil.rmtree(os.path.dirname(temp_cameras_json))
-            raise e
+            # 设置背景
+            if model.extract(args).random_background:
+                bg_color = [np.random.random(), np.random.random(), np.random.random()]
+            elif model.extract(args).white_background:
+                bg_color = [1.0, 1.0, 1.0]
+            else:
+                bg_color = [0.0, 0.0, 0.0]
+            self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+            
+            # 确保模型路径存在
+            if not os.path.exists(model.extract(args).model_path):
+                os.makedirs(model.extract(args).model_path)
+            
+            # 保存参数
+            self.dataset = model.extract(args)
+            self.pipeline = pipeline.extract(args)
 
-        # 9. 设置背景
-        if self.dataset.random_background:
-            bg_color = [np.random.random(), np.random.random(), np.random.random()]
-        elif self.dataset.white_background:
-            bg_color = [1.0, 1.0, 1.0]
-        else:
-            bg_color = [0.0, 0.0, 0.0]
-        self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
-        # 10. 确保模型路径存在
-        if not os.path.exists(self.dataset.model_path):
-            os.makedirs(self.dataset.model_path)
-
-        # 11. 加载区域配置和相机ID到区域的映射（复制自render9-huang.py）
+        # 加载区域配置和相机ID到区域的映射（复制自render9-huang.py）
         if os.path.exists(regions_config_path):
             with open(regions_config_path, 'r', encoding='utf-8') as f:
                 self.regions_config = json.load(f)
@@ -197,7 +209,7 @@ class Renderer:
         else:
             print(f"错误：区域配置文件不存在！路径：{regions_config_path}")
 
-        # 12. 加载cameras.json
+        # 加载cameras.json
         if os.path.exists(cameras_json_path):
             with open(cameras_json_path, 'r', encoding='utf-8') as f:
                 self.cameras_json = json.load(f)
