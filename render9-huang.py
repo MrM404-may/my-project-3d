@@ -43,19 +43,31 @@ class Renderer:
         self.regions_config = []
         
         # 初始化模型和场景
-        from arguments import ModelParams, PipelineParams
+        from arguments import ModelParams, PipelineParams, get_combined_args
         import argparse
+        import sys
+        
+        # 保存原始命令行参数
+        original_argv = sys.argv.copy()
+        
+        # 临时设置命令行参数
+        sys.argv = [
+            "render9-huang.py",
+            "--model_path", model_path,
+            "--source_path", data_path,
+            "--iteration", str(iteration)
+        ]
         
         # 创建参数解析器
         parser = argparse.ArgumentParser(description="Testing script parameters")
         model = ModelParams(parser, sentinel=True)
         pipeline = PipelineParams(parser)
         
-        # 手动设置参数
-        args = parser.parse_args([])
-        args.model_path = model_path
-        args.source_path = data_path
-        args.iteration = iteration
+        # 获取完整的参数（包括从配置文件读取的）
+        args = get_combined_args(parser)
+        
+        # 恢复原始命令行参数
+        sys.argv = original_argv
         
         # 提取参数
         self.dataset = model.extract(args)
