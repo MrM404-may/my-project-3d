@@ -84,50 +84,27 @@ class Renderer:
         self.pipeline.compute_cov3D_python = False
         self.pipeline.debug = False
 
-        # 5. 加载Gaussian模型
-        self.gaussians = GaussianModel(
-            self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, False,  # Explicitly set use_feat_bank=False
+        # 5. 使用Scene初始化加载模型（使用原始代码结构）
+        from scene import Scene
+        from gaussian_renderer import GaussianModel
+        
+        print(f"Loading trained model at iteration {iteration}")
+        scene = Scene(self.dataset, GaussianModel(
+            self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank,
             self.dataset.appearance_dim, self.dataset.add_opacity_dist, self.dataset.add_cov_dist,
             self.dataset.add_color_dist, self.dataset.add_level, self.dataset.visible_threshold,
             self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
-        )
+        ), load_iteration=iteration, shuffle=False, resolution_scales=self.dataset.resolution_scales)
         
-        # 直接加载Gaussian模型，绕过Scene初始化
-        if iteration == -1:
-            # 查找最新的迭代
-            import glob
-            import os
-            iteration_dirs = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
-            if not iteration_dirs:
-                raise FileNotFoundError(f"No iteration directories found in {os.path.join(model_path, 'point_cloud')}")
-            iterations = [int(d.split('_')[-1]) for d in iteration_dirs]
-            self.iteration = max(iterations)
-        else:
-            self.iteration = iteration
-        
-        # 加载点云
-        ply_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}", "point_cloud.ply")
-        if not os.path.exists(ply_path):
-            # 尝试加载merged_anchors.ply
-            ply_path = os.path.join(model_path, "merged_anchors.ply")
-            if not os.path.exists(ply_path):
-                raise FileNotFoundError(f"No PLY file found at {ply_path}")
-        
-        self.gaussians.load_ply_sparse_gaussian(ply_path)
-        
-        # 6. 加载MLP checkpoint
-        mlp_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}")
-        if not os.path.exists(mlp_path):
-            raise FileNotFoundError(f"MLP checkpoint directory not found at {mlp_path}")
-        self.gaussians.load_mlp_checkpoints(mlp_path)
-        
+        self.gaussians = scene.gaussians
+        self.iteration = scene.loaded_iter
         self.gaussians.eval()
 
-        # 7. 设置背景
+        # 6. 设置背景
         bg_color = [1.0, 1.0, 1.0] if self.dataset.white_background else [0.0, 0.0, 0.0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        # 8. 加载cameras.json
+        # 7. 加载cameras.json
         if os.path.exists(cameras_json_path):
             with open(cameras_json_path, 'r', encoding='utf-8') as f:
                 self.cameras_json = json.load(f)
@@ -142,14 +119,14 @@ class Renderer:
         else:
             raise FileNotFoundError(f"cameras.json not found at {cameras_json_path}")
 
-        # 9. 加载cache.json
+        # 8. 加载cache.json
         if os.path.exists(cache_json_path):
             with open(cache_json_path, 'r', encoding='utf-8') as f:
                 self.cache_json = json.load(f)
         else:
             raise FileNotFoundError(f"cache.json not found at {cache_json_path}")
 
-        # 10. 加载regions_config.json
+        # 9. 加载regions_config.json
         if os.path.exists(regions_config_path):
             with open(regions_config_path, 'r', encoding='utf-8') as f:
                 self.regions_config = json.load(f)
