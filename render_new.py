@@ -82,7 +82,7 @@ class Renderer:
         # 6. 初始化系统状态
         safe_state(False)
 
-        # 7. 加载Gaussian模型（绕过Scene初始化）
+        # 7. 加载Gaussian模型（使用与render9-huang.py相同的方式）
         print(f"Loading trained model at iteration {iteration}")
         self.gaussians = GaussianModel(
             self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank, self.dataset.appearance_dim,
@@ -90,36 +90,58 @@ class Renderer:
             self.dataset.visible_threshold, self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
         )
         
-        # 8. 直接加载模型文件（绕过Scene的相机加载）
-        if iteration == -1:
-            # 查找最新的迭代
-            import glob
-            iteration_dirs = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
-            if not iteration_dirs:
-                raise FileNotFoundError(f"No iteration directories found in {os.path.join(model_path, 'point_cloud')}")
-            iterations = [int(d.split('_')[-1]) for d in iteration_dirs]
-            self.iteration = max(iterations)
-        else:
-            self.iteration = iteration
+        # 8. 创建Scene对象（使用与render9-huang.py相同的方式）
+        # 注意：这里我们需要确保cameras.json文件格式正确
+        # 临时创建一个符合Scene预期格式的cameras.json文件
+        import tempfile
+        import shutil
         
-        # 加载点云
-        ply_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}", "point_cloud.ply")
-        if not os.path.exists(ply_path):
-            # 尝试加载merged_anchors.ply
-            ply_path = os.path.join(model_path, "merged_anchors.ply")
-            if not os.path.exists(ply_path):
-                raise FileNotFoundError(f"No PLY file found at {ply_path}")
+        # 保存原始cameras.json文件
+        original_cameras_json = os.path.join(args.source_path, "cameras.json")
+        temp_cameras_json = None
         
-        self.gaussians.load_ply_sparse_gaussian(ply_path)
-        
-        # 加载MLP checkpoint
-        mlp_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}")
-        if not os.path.exists(mlp_path):
-            raise FileNotFoundError(f"MLP checkpoint directory not found at {mlp_path}")
-        self.gaussians.load_mlp_checkpoints(mlp_path)
-        
-        self.gaussians.eval()
-        self.gaussians.plot_levels()
+        try:
+            # 读取原始cameras.json文件
+            with open(original_cameras_json, 'r', encoding='utf-8') as f:
+                cameras_data = json.load(f)
+            
+            # 检查格式是否为列表
+            if isinstance(cameras_data, list):
+                # 创建临时cameras.json文件，添加"frames"键
+                temp_dir = tempfile.mkdtemp()
+                temp_cameras_json = os.path.join(temp_dir, "cameras.json")
+                
+                # 构建符合Scene预期格式的JSON数据
+                scene_cameras_data = {
+                    "camera_angle_x": 0.6911112070278503,  # 默认值
+                    "frames": cameras_data
+                }
+                
+                # 写入临时文件
+                with open(temp_cameras_json, 'w', encoding='utf-8') as f:
+                    json.dump(scene_cameras_data, f)
+                
+                # 临时替换source_path为临时目录
+                original_source_path = self.dataset.source_path
+                self.dataset.source_path = temp_dir
+            
+            # 创建Scene对象
+            scene = Scene(self.dataset, self.gaussians, load_iteration=iteration, shuffle=False, resolution_scales=self.dataset.resolution_scales)
+            self.gaussians.eval()
+            self.gaussians.plot_levels()
+            self.iteration = scene.loaded_iter
+            
+            # 恢复原始source_path
+            if temp_cameras_json:
+                self.dataset.source_path = original_source_path
+                # 清理临时目录
+                shutil.rmtree(temp_dir)
+                
+        except Exception as e:
+            # 清理临时目录
+            if temp_cameras_json and os.path.exists(os.path.dirname(temp_cameras_json)):
+                shutil.rmtree(os.path.dirname(temp_cameras_json))
+            raise e
 
         # 9. 设置背景
         if self.dataset.random_background:
