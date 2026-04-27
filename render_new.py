@@ -278,14 +278,29 @@ class Renderer:
 
 # 使用示例
 if __name__ == "__main__":
+    # 解析命令行参数
+    import argparse
+    parser = argparse.ArgumentParser(description="Render new views from arbitrary camera poses")
+    parser.add_argument("-m", "--model_path", type=str, required=True, help="Path to model directory")
+    parser.add_argument("-s", "--source_path", type=str, required=True, help="Path to source data directory")
+    parser.add_argument("--iteration", type=int, default=-1, help="Iteration to load")
+    parser.add_argument("--white_background", action="store_true", help="Use white background")
+    args = parser.parse_args()
+    
     # 初始化渲染器
     renderer = Renderer()
     
-    # 配置路径（请根据实际情况修改）
-    model_path = "/root/autodl-tmp/Octree-GS/Octree-GS/output/Ma0422"
-    cameras_json_path = "/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422/cameras.json"
-    cache_json_path = "/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422/cache.json"
-    regions_config_path = "/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422/regions_config.json"
+    # 构建路径
+    model_path = args.model_path
+    cameras_json_path = os.path.join(args.source_path, "cameras.json")
+    cache_json_path = os.path.join(args.source_path, "cache.json")
+    regions_config_path = os.path.join(args.source_path, "regions_config.json")
+    
+    print(f"📁 Model path: {model_path}")
+    print(f"📁 Source path: {args.source_path}")
+    print(f"📁 Cameras JSON: {cameras_json_path}")
+    print(f"📁 Cache JSON: {cache_json_path}")
+    print(f"📁 Regions config: {regions_config_path}")
     
     # 初始化
     renderer.render_init(
@@ -293,8 +308,8 @@ if __name__ == "__main__":
         cameras_json_path=cameras_json_path,
         cache_json_path=cache_json_path,
         regions_config_path=regions_config_path,
-        iteration=-1,
-        white_background=False
+        iteration=args.iteration,
+        white_background=args.white_background
     )
     
     # 示例：使用一个训练相机的位姿进行渲染测试
