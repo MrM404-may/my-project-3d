@@ -264,13 +264,22 @@ class GaussianModel:
         return self._anchor_feat
     
     def get_opacity_mlp(self, region=0):
-        return self.mlp_opacity[region]   
+        if isinstance(self.mlp_opacity, torch.nn.ModuleList):
+            return self.mlp_opacity[region]
+        else:
+            return self.mlp_opacity
 
     def get_cov_mlp(self, region=0):
-        return self.mlp_cov[region]
+        if isinstance(self.mlp_cov, torch.nn.ModuleList):
+            return self.mlp_cov[region]
+        else:
+            return self.mlp_cov
     
     def get_color_mlp(self, region=0):
-        return self.mlp_color[region]
+        if isinstance(self.mlp_color, torch.nn.ModuleList):
+            return self.mlp_color[region]
+        else:
+            return self.mlp_color
     
     @property
     def get_featurebank_mlp(self):
