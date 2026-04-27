@@ -128,37 +128,54 @@ class GaussianModel:
         self.color_dist_dim = 1 if self.add_color_dist else 0
         self.level_dim = 1 if self.add_level else 0
     
-        # 初始化区域专家MLP
-        self.mlp_opacity = nn.ModuleList()
-        self.mlp_cov = nn.ModuleList()
-        self.mlp_color = nn.ModuleList()
+        # ====================== 新增：使用全局 4D Hash + Tiny MLP 替代区域 MLP ======================
+        self.use_global_mlp = True  # 启用全局 MLP
         
-        for i in range(self.num_regions):
-            # 不透明度MLP
-            mlp_opacity = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim, self.feat_dim),
-                    nn.ReLU(True),
-                    nn.Linear(self.feat_dim, self.n_offsets),
-                    nn.Tanh()
-                ).cuda()
-            self.mlp_opacity.append(mlp_opacity)
+        if self.use_global_mlp:
+            from .continuous_update import GlobalGaussianMLP, ContinuousUpdateManager
+            self.global_mlp_manager = ContinuousUpdateManager(
+                num_regions=self.num_regions,
+                n_offsets=self.n_offsets,
+            )
+            self.global_gaussian_mlp = self.global_mlp_manager.get_global_mlp()
             
-            # 协方差MLP
-            mlp_cov = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim, self.feat_dim),
-                    nn.ReLU(True),
-                    nn.Linear(self.feat_dim, 7*self.n_offsets),
-                ).cuda()
-            self.mlp_cov.append(mlp_cov)
+            # 保留占位符以避免代码兼容性问题
+            self.mlp_opacity = None
+            self.mlp_cov = None
+            self.mlp_color = None
+        else:
+            # 原来的区域 MLP（备用）
+            self.mlp_opacity = nn.ModuleList()
+            self.mlp_cov = nn.ModuleList()
+            self.mlp_color = nn.ModuleList()
             
-            # 颜色MLP
-            mlp_color = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.color_dist_dim+self.level_dim+self.appearance_dim, self.feat_dim),
-                    nn.ReLU(True),
-                    nn.Linear(self.feat_dim, 3*self.n_offsets),
-                    nn.Sigmoid()
-                ).cuda()
-            self.mlp_color.append(mlp_color)
+            for i in range(self.num_regions):
+                # 不透明度MLP
+                mlp_opacity = nn.Sequential(
+                        nn.Linear(self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim, self.feat_dim),
+                        nn.ReLU(True),
+                        nn.Linear(self.feat_dim, self.n_offsets),
+                        nn.Tanh()
+                    ).cuda()
+                self.mlp_opacity.append(mlp_opacity)
+                
+                # 协方差MLP
+                mlp_cov = nn.Sequential(
+                        nn.Linear(self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim, self.feat_dim),
+                        nn.ReLU(True),
+                        nn.Linear(self.feat_dim, 7*self.n_offsets),
+                    ).cuda()
+                self.mlp_cov.append(mlp_cov)
+                
+                # 颜色MLP
+                mlp_color = nn.Sequential(
+                        nn.Linear(self.feat_dim+self.view_dim+self.color_dist_dim+self.level_dim+self.appearance_dim, self.feat_dim),
+                        nn.ReLU(True),
+                        nn.Linear(self.feat_dim, 3*self.n_offsets),
+                        nn.Sigmoid()
+                    ).cuda()
+                self.mlp_color.append(mlp_color)
+        # ========================================================================================
         
         if self.use_feat_bank:
             self.mlp_feature_bank = nn.Sequential(
@@ -181,24 +198,36 @@ class GaussianModel:
         # =========================================================================
 
     def eval(self):
-        for mlp in self.mlp_opacity:
-            mlp.eval()
-        for mlp in self.mlp_cov:
-            mlp.eval()
-        for mlp in self.mlp_color:
-            mlp.eval()
+        if self.use_global_mlp and self.global_gaussian_mlp is not None:
+            self.global_gaussian_mlp.eval()
+        else:
+            if self.mlp_opacity is not None:
+                for mlp in self.mlp_opacity:
+                    mlp.eval()
+            if self.mlp_cov is not None:
+                for mlp in self.mlp_cov:
+                    mlp.eval()
+            if self.mlp_color is not None:
+                for mlp in self.mlp_color:
+                    mlp.eval()
         if self.use_feat_bank:
             self.mlp_feature_bank.eval()
         if self.appearance_dim > 0:
             self.embedding_appearance.eval()
 
     def train(self):
-        for mlp in self.mlp_opacity:
-            mlp.train()
-        for mlp in self.mlp_cov:
-            mlp.train()
-        for mlp in self.mlp_color:
-            mlp.train()
+        if self.use_global_mlp and self.global_gaussian_mlp is not None:
+            self.global_gaussian_mlp.train()
+        else:
+            if self.mlp_opacity is not None:
+                for mlp in self.mlp_opacity:
+                    mlp.train()
+            if self.mlp_cov is not None:
+                for mlp in self.mlp_cov:
+                    mlp.train()
+            if self.mlp_color is not None:
+                for mlp in self.mlp_color:
+                    mlp.train()
         if self.use_feat_bank:
             self.mlp_feature_bank.train()
         if self.appearance_dim > 0:
@@ -466,7 +495,7 @@ class GaussianModel:
             self.anchor_demon = torch.zeros((self.get_anchor.shape[0], 1), device="cuda")
         
         l = []
-        # 非冻结模式：仅添加高斯球参数（不再重复添加MLP）
+        # 非冻结模式：仅添加高斯球参数
         if not self.freeze_gaussians:
             l = [
                 {'params': [self._anchor], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "anchor"},
@@ -477,13 +506,19 @@ class GaussianModel:
                 {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             ]
         
-        # 无论是否冻结，统一且仅添加一次 MLP / Embedding 参数
-        for i in range(self.num_regions):
-            l.extend([
-                {'params': self.mlp_opacity[i].parameters(), 'lr': training_args.mlp_opacity_lr_init, "name": f"mlp_opacity_{i}"},
-                {'params': self.mlp_cov[i].parameters(), 'lr': training_args.mlp_cov_lr_init, "name": f"mlp_cov_{i}"},
-                {'params': self.mlp_color[i].parameters(), 'lr': training_args.mlp_color_lr_init, "name": f"mlp_color_{i}"},
-            ])
+        # ====================== 新增：添加全局 MLP 参数或区域 MLP 参数 ======================
+        if self.use_global_mlp:
+            # 使用全局 MLP
+            l.extend(self.global_gaussian_mlp.get_optimizable_params())
+        else:
+            # 使用原来的区域 MLP
+            for i in range(self.num_regions):
+                l.extend([
+                    {'params': self.mlp_opacity[i].parameters(), 'lr': training_args.mlp_opacity_lr_init, "name": f"mlp_opacity_{i}"},
+                    {'params': self.mlp_cov[i].parameters(), 'lr': training_args.mlp_cov_lr_init, "name": f"mlp_cov_{i}"},
+                    {'params': self.mlp_color[i].parameters(), 'lr': training_args.mlp_color_lr_init, "name": f"mlp_color_{i}"},
+                ])
+        # =====================================================================================
 
         if self.appearance_dim > 0:
             l.append({'params': self.embedding_appearance.parameters(), 'lr': training_args.appearance_lr_init, "name": "embedding_appearance"})
@@ -502,7 +537,7 @@ class GaussianModel:
                                                         lr_final=training_args.offset_lr_final*self.spatial_lr_scale,
                                                         lr_delay_mult=training_args.offset_lr_delay_mult,
                                                         max_steps=training_args.offset_lr_max_steps)
-        # MLP调度器始终保留    
+        # MLP调度器始终保留（全局 MLP 使用相同的学习率）
         self.mlp_opacity_scheduler_args = get_expon_lr_func(lr_init=training_args.mlp_opacity_lr_init,
                                                     lr_final=training_args.mlp_opacity_lr_final,
                                                     lr_delay_mult=training_args.mlp_opacity_lr_delay_mult,

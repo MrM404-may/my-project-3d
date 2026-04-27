@@ -66,9 +66,7 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
 
     ## get view properties for anchor
     ob_view = anchor - viewpoint_camera.camera_center
-    # dist
     ob_dist = ob_view.norm(dim=1, keepdim=True)
-    # view
     ob_view = ob_view / ob_dist
 
     ## view-adaptive feature
@@ -78,152 +76,175 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         else:
             cat_view = ob_view
         
-        bank_weight = pc.get_featurebank_mlp(cat_view).unsqueeze(dim=1) # [n, 1, 3]
-
-        ## multi-resolution feat
+        bank_weight = pc.get_featurebank_mlp(cat_view).unsqueeze(dim=1)
+        
         feat = feat.unsqueeze(dim=-1)
         feat = feat[:,::4, :1].repeat([1,4,1])*bank_weight[:,:,:1] + \
             feat[:,::2, :1].repeat([1,2,1])*bank_weight[:,:,1:2] + \
             feat[:,::1, :1]*bank_weight[:,:,2:]
-        feat = feat.squeeze(dim=-1) # [n, c]
-
-    # 构建默认的输入张量
-    if pc.add_level:
-        cat_local_view = torch.cat([feat, ob_view, ob_dist, level], dim=1) # [N, c+3+1+1]
-        cat_local_view_wodist = torch.cat([feat, ob_view, level], dim=1) # [N, c+3+1]
-    else:
-        cat_local_view = torch.cat([feat, ob_view, ob_dist], dim=1) # [N, c+3+1]
-        cat_local_view_wodist = torch.cat([feat, ob_view], dim=1) # [N, c+3]
-
+        feat = feat.squeeze(dim=-1)
+    
     # ==============================
-    # 持续更新：应用全局外观模型
+    # 使用全局 4D Hash + Tiny MLP 替代区域 MLP
     # ==============================
     delta_sh = None
     delta_scale = None
-    if use_continuous_update and hasattr(pc, 'get_appearance_updates'):
-        delta_sh, delta_scale = pc.get_appearance_updates()
-        # 过滤到当前区域
-        if delta_sh is not None:
-            delta_sh = delta_sh[visible_mask][region_mask]
-        if delta_scale is not None:
-            delta_scale = delta_scale[visible_mask][region_mask]
-
-    if pc.appearance_dim > 0:
-        if is_training or ape_code < 0: 
-            camera_indicies = torch.ones_like(cat_local_view[:,0], dtype=torch.long, device=ob_dist.device) * viewpoint_camera.uid 
-            # 传递当前区域索引
-            appearance = pc.get_appearance(camera_indicies, region=camera_region) 
-        else: 
-            # 处理ape_code为整数的情况 
-            if isinstance(ape_code, int): 
-                camera_indicies = torch.ones_like(cat_local_view[:,0], dtype=torch.long, device=ob_dist.device) * ape_code 
+    if hasattr(pc, 'use_global_mlp') and pc.use_global_mlp and pc.global_gaussian_mlp is not None:
+        # 使用全局 MLP
+        if pc.appearance_dim > 0:
+            if is_training or ape_code < 0: 
+                camera_indicies = torch.ones_like(ob_dist[:,0], dtype=torch.long, device=ob_dist.device) * viewpoint_camera.uid 
+                appearance = pc.get_appearance(camera_indicies, region=camera_region) 
             else: 
-                camera_indicies = torch.ones_like(cat_local_view[:,0], dtype=torch.long, device=ob_dist.device) * ape_code[0] 
-            # 传递当前区域索引
-            appearance = pc.get_appearance(camera_indicies, region=camera_region) 
-            
-    # get offset's opacity
-    if pc.add_opacity_dist:
-        neural_opacity = pc.get_opacity_mlp(camera_region)(cat_local_view) # [N, k]
-    else:
-        neural_opacity = pc.get_opacity_mlp(camera_region)(cat_local_view_wodist)
-    
-    if pc.dist2level=="progressive":
-        # 使用过滤后的region_mask来获取prog
-        prog = pc._prog_ratio[visible_mask][region_mask]
-        transition_mask = pc.transition_mask[visible_mask][region_mask]
-        prog[~transition_mask] = 1.0
-        neural_opacity = neural_opacity * prog
-
-    # ==============================
-    # 持续更新：应用移除因子到不透明度
-    # ==============================
-    if use_continuous_update and hasattr(pc, 'apply_removal_factor'):
-        # 将neural_opacity重塑为[N, k]，然后对每个anchor应用移除因子
-        num_anchors = anchor.shape[0]
-        neural_opacity_reshaped = neural_opacity.reshape([num_anchors, -1])
-        # 获取当前anchor的原始不透明度并应用移除因子
-        base_opacity = pc.get_opacity[visible_mask][region_mask]
-        # 重复base_opacity到每个offset
-        base_opacity_repeated = repeat(base_opacity, 'n 1 -> n k', k=pc.n_offsets)
-        # 应用移除因子到base_opacity
-        applied_opacity = pc.apply_removal_factor(base_opacity_repeated)
-        # 用应用了移除因子的opacity调整neural_opacity
-        neural_opacity = neural_opacity_reshaped * applied_opacity
+                if isinstance(ape_code, int): 
+                    camera_indicies = torch.ones_like(ob_dist[:,0], dtype=torch.long, device=ob_dist.device) * ape_code 
+                else: 
+                    camera_indicies = torch.ones_like(ob_dist[:,0], dtype=torch.long, device=ob_dist.device) * ape_code[0] 
+                appearance = pc.get_appearance(camera_indicies, region=camera_region) 
+        else:
+            appearance = None
+        
+        # 调用全局 MLP
+        timestamp = pc.global_mlp_manager.current_timestamp if hasattr(pc.global_mlp_manager, 'current_timestamp') else 0.0
+        mlp_outputs = pc.global_gaussian_mlp(
+            positions=anchor,
+            timestamp=timestamp,
+            region_ids=current_region_ids.long(),
+            view_direction=ob_view,
+            appearance_embedding=appearance
+        )
+        
+        neural_opacity = mlp_outputs['opacity']
+        scale_rot = mlp_outputs['cov']
+        color = mlp_outputs['color']
+        
+        # Progressive 处理
+        if pc.dist2level == "progressive":
+            prog = pc._prog_ratio[visible_mask][region_mask]
+            transition_mask = pc.transition_mask[visible_mask][region_mask]
+            prog[~transition_mask] = 1.0
+            neural_opacity = neural_opacity * prog
+        
+        # 移除因子应用（可选）
+        if use_continuous_update and pc.global_mlp_manager.removal_factor is not None:
+            base_opacity = pc.get_opacity[visible_mask][region_mask]
+            base_opacity_repeated = repeat(base_opacity, 'n 1 -> n k', k=pc.n_offsets)
+            applied_opacity = pc.global_mlp_manager.removal_factor.apply(base_opacity_repeated)
+            neural_opacity = neural_opacity * applied_opacity
+        
+        # 重塑输出形状
         neural_opacity = neural_opacity.reshape([-1, 1])
-
-    # opacity mask generation
-    neural_opacity = neural_opacity.reshape([-1, 1])
-    mask = (neural_opacity>0.0)
-    mask = mask.view(-1)
-
-    # select opacity 
-    opacity = neural_opacity[mask]
-
-    # get offset's color
-    if pc.appearance_dim > 0:
-        if pc.add_color_dist:
-            color = pc.get_color_mlp(camera_region)(torch.cat([cat_local_view, appearance], dim=1))
-        else:
-            color = pc.get_color_mlp(camera_region)(torch.cat([cat_local_view_wodist, appearance], dim=1))
+        scale_rot = scale_rot.reshape([anchor.shape[0] * pc.n_offsets, 7])
+        color = color.reshape([anchor.shape[0] * pc.n_offsets, 3])
+        
+        # 生成掩码
+        mask = (neural_opacity > 0.0)
+        mask = mask.view(-1)
+        
+        # 选择不透明度
+        opacity = neural_opacity[mask]
     else:
-        if pc.add_color_dist:
-            color = pc.get_color_mlp(camera_region)(cat_local_view)
+        # ==============================
+        # 原来的区域 MLP 方式（备用）
+        # ==============================
+        
+        # 构建默认的输入张量
+        if pc.add_level:
+            cat_local_view = torch.cat([feat, ob_view, ob_dist, level], dim=1)
+            cat_local_view_wodist = torch.cat([feat, ob_view, level], dim=1)
         else:
-            color = pc.get_color_mlp(camera_region)(cat_local_view_wodist)
-    color = color.reshape([anchor.shape[0]*pc.n_offsets, 3])# [mask]
-    
-    # ==============================
-    # 持续更新：应用全局外观模型到颜色
-    # ==============================
-    if use_continuous_update and delta_sh is not None:
-        # 这里我们简化处理，delta_sh包含球谐系数的增量
-        # 我们将其应用为颜色的微调
-        num_offsets = pc.n_offsets
-        # 重复delta_sh到每个offset
-        delta_sh_repeated = repeat(delta_sh, 'n c -> (n k) c', k=num_offsets)
-        # 取前3个维度作为颜色增量
-        delta_color = delta_sh_repeated[:, :3]
-        # 应用到颜色
-        color = color + delta_color
-        # 确保颜色在[0, 1]范围内
-        color = torch.clamp(color, 0.0, 1.0)
-
-    # get offset's cov
-    if pc.add_cov_dist:
-        scale_rot = pc.get_cov_mlp(camera_region)(cat_local_view)
-    else:
-        scale_rot = pc.get_cov_mlp(camera_region)(cat_local_view_wodist)
-    scale_rot = scale_rot.reshape([anchor.shape[0]*pc.n_offsets, 7]) # [mask]
+            cat_local_view = torch.cat([feat, ob_view, ob_dist], dim=1)
+            cat_local_view_wodist = torch.cat([feat, ob_view], dim=1)
+        
+        if use_continuous_update and hasattr(pc, 'get_appearance_updates'):
+            delta_sh, delta_scale = pc.get_appearance_updates()
+            delta_sh = delta_sh[visible_mask][region_mask]
+            delta_scale = delta_scale[visible_mask][region_mask]
+        
+        if pc.appearance_dim > 0:
+            if is_training or ape_code < 0: 
+                camera_indicies = torch.ones_like(cat_local_view[:,0], dtype=torch.long, device=ob_dist.device) * viewpoint_camera.uid 
+                appearance = pc.get_appearance(camera_indicies, region=camera_region) 
+            else: 
+                if isinstance(ape_code, int): 
+                    camera_indicies = torch.ones_like(cat_local_view[:,0], dtype=torch.long, device=ob_dist.device) * ape_code 
+                else: 
+                    camera_indicies = torch.ones_like(cat_local_view[:,0], dtype=torch.long, device=ob_dist.device) * ape_code[0] 
+                appearance = pc.get_appearance(camera_indicies, region=camera_region) 
+            
+        # get offset's opacity
+        if pc.add_opacity_dist:
+            neural_opacity = pc.get_opacity_mlp(camera_region)(cat_local_view)
+        else:
+            neural_opacity = pc.get_opacity_mlp(camera_region)(cat_local_view_wodist)
+        
+        if pc.dist2level=="progressive":
+            prog = pc._prog_ratio[visible_mask][region_mask]
+            transition_mask = pc.transition_mask[visible_mask][region_mask]
+            prog[~transition_mask] = 1.0
+            neural_opacity = neural_opacity * prog
+        
+        if use_continuous_update and hasattr(pc, 'apply_removal_factor'):
+            num_anchors = anchor.shape[0]
+            neural_opacity_reshaped = neural_opacity.reshape([num_anchors, -1])
+            base_opacity = pc.get_opacity[visible_mask][region_mask]
+            base_opacity_repeated = repeat(base_opacity, 'n 1 -> n k', k=pc.n_offsets)
+            applied_opacity = pc.apply_removal_factor(base_opacity_repeated)
+            neural_opacity = neural_opacity_reshaped * applied_opacity
+            neural_opacity = neural_opacity.reshape([-1, 1])
+        
+        # opacity mask generation
+        neural_opacity = neural_opacity.reshape([-1, 1])
+        mask = (neural_opacity>0.0)
+        mask = mask.view(-1)
+        
+        opacity = neural_opacity[mask]
+        
+        # get offset's color
+        if pc.appearance_dim > 0:
+            if pc.add_color_dist:
+                color = pc.get_color_mlp(camera_region)(torch.cat([cat_local_view, appearance], dim=1))
+            else:
+                color = pc.get_color_mlp(camera_region)(torch.cat([cat_local_view_wodist, appearance], dim=1))
+        else:
+            if pc.add_color_dist:
+                color = pc.get_color_mlp(camera_region)(cat_local_view)
+            else:
+                color = pc.get_color_mlp(camera_region)(cat_local_view_wodist)
+        color = color.reshape([anchor.shape[0]*pc.n_offsets, 3])
+        
+        if use_continuous_update and delta_sh is not None:
+            num_offsets = pc.n_offsets
+            delta_sh_repeated = repeat(delta_sh, 'n c -> (n k) c', k=num_offsets)
+            delta_color = delta_sh_repeated[:, :3]
+            color = color + delta_color
+            color = torch.clamp(color, 0.0, 1.0)
+        
+        if pc.add_cov_dist:
+            scale_rot = pc.get_cov_mlp(camera_region)(cat_local_view)
+        else:
+            scale_rot = pc.get_cov_mlp(camera_region)(cat_local_view_wodist)
+        scale_rot = scale_rot.reshape([anchor.shape[0]*pc.n_offsets, 7])
     
     # offsets
-    offsets = grid_offsets.view([-1, 3]) # [mask]
+    offsets = grid_offsets.view([-1, 3])
     
     # combine for parallel masking
     concatenated = torch.cat([grid_scaling, anchor], dim=-1)
-    concatenated_repeated = repeat(concatenated, 'n (c) -> (n k) (c)', k=pc.n_offsets)
+    concatenated_repeated = repeat(concatenated, 'n (c) -> (n k) c', k=pc.n_offsets)
     concatenated_all = torch.cat([concatenated_repeated, color, scale_rot, offsets], dim=-1)
     masked = concatenated_all[mask]
     scaling_repeat, repeat_anchor, color, scale_rot, offsets = masked.split([6, 3, 3, 7, 3], dim=-1)
     
     # post-process cov
-    scaling = scaling_repeat[:,3:] * torch.sigmoid(scale_rot[:,:3]) # * (1+torch.sigmoid(repeat_dist))
+    scaling = scaling_repeat[:,3:] * torch.sigmoid(scale_rot[:,:3])
     
-    # ==============================
-    # 持续更新：应用缩放增量
-    # ==============================
-    if use_continuous_update and delta_scale is not None:
-        # 获取当前在mask中的索引，确定对应哪些anchor和offset
-        # 这部分需要更复杂的处理，这里我们做简化
-        # delta_scale形状是[N, 3]，我们需要将其与mask匹配
-        num_anchors = anchor.shape[0]
-        mask_reshaped = mask.reshape([num_anchors, -1])
-        # 对每个offset，找出它属于哪个anchor
-        anchor_indices = (torch.arange(len(mask), device=mask.device) // pc.n_offsets)
-        # 选择与mask匹配的delta_scale
-        delta_scale_selected = delta_scale[anchor_indices[mask]]
-        # 应用缩放增量
-        scaling = scaling * (1.0 + delta_scale_selected)
+    # 应用原来的缩放增量（如果需要）
+    if not (hasattr(pc, 'use_global_mlp') and pc.use_global_mlp):
+        if use_continuous_update and 'delta_scale' in locals() and delta_scale is not None:
+            anchor_indices = (torch.arange(len(mask), device=mask.device) // pc.n_offsets)
+            delta_scale_selected = delta_scale[anchor_indices[mask]]
+            scaling = scaling * (1.0 + delta_scale_selected)
     
     rot = pc.rotation_activation(scale_rot[:,3:7])
     
@@ -243,7 +264,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     Background tensor (bg_color) must be on GPU!
     """
 
-    is_training = pc.get_color_mlp(0).training
+    # 检查是否使用全局 MLP
+    if hasattr(pc, 'use_global_mlp') and pc.use_global_mlp:
+        is_training = pc.global_gaussian_mlp.training
+    else:
+        is_training = pc.get_color_mlp(0).training
         
     if is_training:
         xyz, color, opacity, scaling, rot, neural_opacity, mask = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, camera_region=camera_region, use_continuous_update=use_continuous_update)
