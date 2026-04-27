@@ -92,9 +92,34 @@ class Renderer:
             self.dataset.add_color_dist, self.dataset.add_level, self.dataset.visible_threshold,
             self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
         )
-        scene = Scene(self.dataset, self.gaussians, load_iteration=iteration, shuffle=False)
+        
+        # 直接加载Gaussian模型，绕过Scene初始化
+        if iteration == -1:
+            # 查找最新的迭代
+            import glob
+            import os
+            iteration_dirs = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
+            if not iteration_dirs:
+                raise FileNotFoundError(f"No iteration directories found in {os.path.join(model_path, 'point_cloud')}")
+            iterations = [int(d.split('_')[-1]) for d in iteration_dirs]
+            self.iteration = max(iterations)
+        else:
+            self.iteration = iteration
+        
+        # 加载点云
+        ply_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}", "point_cloud.ply")
+        if not os.path.exists(ply_path):
+            # 尝试加载merged_anchors.ply
+            ply_path = os.path.join(model_path, "merged_anchors.ply")
+            if not os.path.exists(ply_path):
+                raise FileNotFoundError(f"No PLY file found at {ply_path}")
+        
+        self.gaussians.load_ply_sparse_gaussian(ply_path)
+        
+        # 加载MLP checkpoint
+        self.gaussians.load_mlp_checkpoints(os.path.join(model_path, "mlp"))
+        
         self.gaussians.eval()
-        self.iteration = scene.loaded_iter
 
         # 4. 设置背景
         bg_color = [1.0, 1.0, 1.0] if self.dataset.white_background else [0.0, 0.0, 0.0]
