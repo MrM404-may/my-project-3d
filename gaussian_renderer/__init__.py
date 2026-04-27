@@ -47,15 +47,21 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
 
     # 获取锚点的region属性
     region = pc._region[visible_mask]
-    # 过滤出属于当前相机区域的锚点
-    region_mask = (region == camera_region)
-    if region_mask.sum() == 0:
-        print("None")
-        # 如果没有属于当前区域的锚点，返回空
-        if is_training:
-            return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, dtype=torch.bool, device=pc.get_anchor.device)
-        else:
-            return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device)
+    
+    # 如果 camera_region 为 -1，使用所有锚点
+    if camera_region == -1:
+        region_mask = torch.ones_like(region, dtype=torch.bool)
+        print("⚠️  使用所有锚点")
+    else:
+        # 过滤出属于当前相机区域的锚点
+        region_mask = (region == camera_region)
+        if region_mask.sum() == 0:
+            print("None")
+            # 如果没有属于当前区域的锚点，返回空
+            if is_training:
+                return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, dtype=torch.bool, device=pc.get_anchor.device)
+            else:
+                return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device)
 
     anchor = pc.get_anchor[visible_mask][region_mask]
     feat = pc.get_anchor_feat[visible_mask][region_mask]
@@ -108,11 +114,14 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
             # 传递当前区域索引
             appearance = pc.get_appearance(camera_indicies, region=camera_region) 
             
+    # 确定使用的区域索引（如果 camera_region 为 -1，使用默认区域 0）
+    use_region = camera_region if camera_region != -1 else 0
+    
     # get offset's opacity
     if pc.add_opacity_dist:
-        neural_opacity = pc.get_opacity_mlp(camera_region)(cat_local_view) # [N, k]
+        neural_opacity = pc.get_opacity_mlp(use_region)(cat_local_view) # [N, k]
     else:
-        neural_opacity = pc.get_opacity_mlp(camera_region)(cat_local_view_wodist)
+        neural_opacity = pc.get_opacity_mlp(use_region)(cat_local_view_wodist)
     
     if pc.dist2level=="progressive":
         # 使用过滤后的region_mask来获取prog
@@ -132,21 +141,21 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     # get offset's color
     if pc.appearance_dim > 0:
         if pc.add_color_dist:
-            color = pc.get_color_mlp(camera_region)(torch.cat([cat_local_view, appearance], dim=1))
+            color = pc.get_color_mlp(use_region)(torch.cat([cat_local_view, appearance], dim=1))
         else:
-            color = pc.get_color_mlp(camera_region)(torch.cat([cat_local_view_wodist, appearance], dim=1))
+            color = pc.get_color_mlp(use_region)(torch.cat([cat_local_view_wodist, appearance], dim=1))
     else:
         if pc.add_color_dist:
-            color = pc.get_color_mlp(camera_region)(cat_local_view)
+            color = pc.get_color_mlp(use_region)(cat_local_view)
         else:
-            color = pc.get_color_mlp(camera_region)(cat_local_view_wodist)
+            color = pc.get_color_mlp(use_region)(cat_local_view_wodist)
     color = color.reshape([anchor.shape[0]*pc.n_offsets, 3])# [mask]
 
     # get offset's cov
     if pc.add_cov_dist:
-        scale_rot = pc.get_cov_mlp(camera_region)(cat_local_view)
+        scale_rot = pc.get_cov_mlp(use_region)(cat_local_view)
     else:
-        scale_rot = pc.get_cov_mlp(camera_region)(cat_local_view_wodist)
+        scale_rot = pc.get_cov_mlp(use_region)(cat_local_view_wodist)
     scale_rot = scale_rot.reshape([anchor.shape[0]*pc.n_offsets, 7]) # [mask]
     
     # offsets

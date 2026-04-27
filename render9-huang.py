@@ -312,6 +312,15 @@ class Renderer:
             # 使用找到的 ape_code 或默认值
             final_ape_code = ape_code if ape_code is not None else auto_ape_code
             
+            # 检查当前区域是否有锚点
+            region_anchors = (self.gaussians._region == camera_region).sum().item()
+            print(f"区域 {camera_region} 的锚点数量: {region_anchors}")
+            
+            # 如果当前区域没有锚点，使用所有锚点（设置为区域 -1）
+            if region_anchors == 0:
+                print("⚠️  当前区域没有锚点，使用所有锚点")
+                camera_region = -1
+            
             # 尝试获取测试相机作为模板
             view = None
             test_cameras = self.scene.getTestCameras()

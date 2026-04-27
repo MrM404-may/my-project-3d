@@ -229,8 +229,10 @@ class GaussianModel:
     @property
     def get_appearance(self):
         def _get_appearance(camera_indicies, region=0):
+            # 如果 region 为 -1，使用默认区域 0
+            use_region = region if region != -1 else 0
             if self.appearance_dim > 0:
-                return self.embedding_appearance[region](camera_indicies)
+                return self.embedding_appearance[use_region](camera_indicies)
             else:
                 return None
         return _get_appearance
