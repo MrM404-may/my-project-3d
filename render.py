@@ -17,8 +17,7 @@ from scene import Scene
 from gaussian_renderer import render, prefilter_voxel
 import torchvision
 from utils.general_utils import safe_state
-from argparse import ArgumentParser
-from arguments import ModelParams, PipelineParams, get_combined_args
+from arguments import ModelParams, PipelineParams
 from gaussian_renderer import GaussianModel
 from utils.camera_utils import Camera
 
@@ -35,30 +34,64 @@ class Renderer:
         self.camera_positions = []
         self.camera_rotations = []
         self.camera_uids = []
+        self.camera_dict = {}
     
     def render_init(self):
         """
         Load PLY model, cameras.json, and cache.json files
         Load one image
         """
-        # Set up command line arguments
-        parser = ArgumentParser(description="Rendering script parameters")
-        model = ModelParams(parser, sentinel=True)
-        pipeline = PipelineParams(parser)
-        parser.add_argument("--iteration", default=-1, type=int)
-        parser.add_argument("--ape", default=10, type=int)
-        parser.add_argument("--quiet", action="store_true")
-        args = get_combined_args(parser)
-        
         # Initialize system state (RNG)
-        safe_state(args.quiet)
+        safe_state(True)
         
-        # Extract model and pipeline parameters
-        model_params = model.extract(args)
-        model_params.model_path = self.model_path
+        # Create model parameters directly
+        class ModelParams:
+            def __init__(self):
+                self.feat_dim = 32
+                self.n_offsets = 16
+                self.fork = 1
+                self.use_feat_bank = True
+                self.source_path = self.source_path
+                self.model_path = self.model_path
+                self.images = "images"
+                self.resolution = -1
+                self.white_background = False
+                self.random_background = False
+                self.resolution_scales = [1.0]
+                self.data_device = "cuda"
+                self.eval = False
+                self.ds = 1
+                self.ratio = 1
+                self.undistorted = False
+                self.appearance_dim = 0
+                self.add_opacity_dist = False
+                self.add_cov_dist = False
+                self.add_color_dist = False
+                self.add_level = True
+                self.extend = 1.1
+                self.dist2level = "progressive"
+                self.base_layer = -1
+                self.visible_threshold = 0.0
+                self.update_ratio = 0.2
+                self.progressive = False
+                self.dist_ratio = 0.999
+                self.levels = -1
+                self.init_level = -1
+                self.extra_ratio = 0.25
+                self.extra_up = 0.01
+        
+        # Create pipeline parameters directly
+        class PipelineParams:
+            def __init__(self):
+                self.compute_cov3D_python = False
+                self.debug = False
+        
+        # Create parameters objects
+        model_params = ModelParams()
         model_params.source_path = self.source_path
+        model_params.model_path = self.model_path
         
-        pipeline_params = pipeline.extract(args)
+        pipeline_params = PipelineParams()
         self.pipeline = pipeline_params
         
         # Initialize Gaussian model
