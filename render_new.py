@@ -48,52 +48,41 @@ class Renderer:
         os.environ['CUDA_VISIBLE_DEVICES']=str(np.argmin([int(x.split()[2]) for x in result[:-1]]))
         os.system('echo $CUDA_VISIBLE_DEVICES')
 
-        # 2. 加载dataset配置（使用原始代码结构）
-        parser = ArgumentParser()
+        # 2. 加载dataset配置（完全复制自render9-huang.py）
+        parser = ArgumentParser(description="Testing script parameters")
         model = ModelParams(parser, sentinel=True)
         pipeline = PipelineParams(parser)
+        parser.add_argument("--iteration", default=-1, type=int)
+        parser.add_argument("--ape", default=10, type=int)
+        parser.add_argument("--skip_train", action="store_true")
+        parser.add_argument("--skip_test", action="store_true")
+        parser.add_argument("--quiet", action="store_true")
+        parser.add_argument("--show_level", action="store_true")
         
-        # 3. 创建args对象
-        class DummyArgs:
-            def __init__(self):
-                self.model_path = model_path
-                self.source_path = model_path
-                self.images = "images"
-                self.resolution = -1
-                self.white_background = white_background
-                self.random_background = False
-                self.data_device = "cuda"
-                self.eval = False
-                self.sh_degree = 3
-                self.feat_dim = 32
-                self.n_offsets = 10
-                self.fork = 4
-                self.use_feat_bank = False
-                self.appearance_dim = 32
-                self.add_opacity_dist = False
-                self.add_cov_dist = False
-                self.add_color_dist = False
-                self.add_level = False
-                self.visible_threshold = 3
-                self.dist2level = 'round'
-                self.base_layer = -1
-                self.progressive = False
-                self.extend = 1.1
-                self.resolution_scales = [1.0]
-                self.undistorted = False
-                self.ratio = 1.0
-                self.ds = 1
+        # 3. 构建命令行参数
+        import sys
+        sys.argv = [
+            "render_new.py",
+            "-m", model_path,
+            "-s", model_path,
+            "--iteration", str(iteration),
+            "--ape", "10"
+        ]
+        if white_background:
+            sys.argv.append("--white_background")
+        
+        # 4. 获取组合参数（完全复制自render9-huang.py）
+        args = get_combined_args(parser)
+        print("Rendering " + args.model_path)
 
-        args = DummyArgs()
-        
-        # 4. 提取参数
+        # 5. 提取参数
         self.dataset = model.extract(args)
         self.pipeline = pipeline.extract(args)
         
-        # 5. 初始化系统状态
+        # 6. 初始化系统状态
         safe_state(False)
 
-        # 6. 加载Gaussian模型（使用原始代码结构）
+        # 7. 加载Gaussian模型（使用原始代码结构）
         print(f"Loading trained model at iteration {iteration}")
         self.gaussians = GaussianModel(
             self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank, self.dataset.appearance_dim,
@@ -101,13 +90,13 @@ class Renderer:
             self.dataset.visible_threshold, self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
         )
         
-        # 7. 创建Scene对象（复制自render9-huang.py）
+        # 8. 创建Scene对象（复制自render9-huang.py）
         scene = Scene(self.dataset, self.gaussians, load_iteration=iteration, shuffle=False, resolution_scales=self.dataset.resolution_scales)
         self.gaussians.eval()
         self.gaussians.plot_levels()
         self.iteration = scene.loaded_iter
 
-        # 8. 设置背景
+        # 9. 设置背景
         if self.dataset.random_background:
             bg_color = [np.random.random(), np.random.random(), np.random.random()]
         elif self.dataset.white_background:
@@ -116,11 +105,11 @@ class Renderer:
             bg_color = [0.0, 0.0, 0.0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        # 9. 确保模型路径存在
+        # 10. 确保模型路径存在
         if not os.path.exists(self.dataset.model_path):
             os.makedirs(self.dataset.model_path)
 
-        # 10. 加载区域配置和相机ID到区域的映射（复制自render9-huang.py）
+        # 11. 加载区域配置和相机ID到区域的映射（复制自render9-huang.py）
         if os.path.exists(regions_config_path):
             with open(regions_config_path, 'r', encoding='utf-8') as f:
                 self.regions_config = json.load(f)
@@ -161,7 +150,7 @@ class Renderer:
         else:
             print(f"错误：区域配置文件不存在！路径：{regions_config_path}")
 
-        # 11. 加载cameras.json
+        # 12. 加载cameras.json
         if os.path.exists(cameras_json_path):
             with open(cameras_json_path, 'r', encoding='utf-8') as f:
                 self.cameras_json = json.load(f)
