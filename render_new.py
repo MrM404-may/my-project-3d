@@ -117,7 +117,10 @@ class Renderer:
         self.gaussians.load_ply_sparse_gaussian(ply_path)
         
         # 加载MLP checkpoint
-        self.gaussians.load_mlp_checkpoints(os.path.join(model_path, "mlp"))
+        mlp_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}")
+        if not os.path.exists(mlp_path):
+            raise FileNotFoundError(f"MLP checkpoint directory not found at {mlp_path}")
+        self.gaussians.load_mlp_checkpoints(mlp_path)
         
         self.gaussians.eval()
 
@@ -129,6 +132,14 @@ class Renderer:
         if os.path.exists(cameras_json_path):
             with open(cameras_json_path, 'r', encoding='utf-8') as f:
                 self.cameras_json = json.load(f)
+            # 确保cameras_json是字典格式
+            if isinstance(self.cameras_json, list):
+                # 将列表转换为字典，以id为键
+                cameras_dict = {}
+                for cam in self.cameras_json:
+                    cam_id = str(cam.get('id', cam.get('uid', len(cameras_dict))))
+                    cameras_dict[cam_id] = cam
+                self.cameras_json = cameras_dict
         else:
             raise FileNotFoundError(f"cameras.json not found at {cameras_json_path}")
 
