@@ -33,11 +33,63 @@ from gaussian_renderer import GaussianModel
 
 
 class Renderer:
-    def __init__(self, regions_config_path=None, cache_path=None):
+    def __init__(self, model_path, data_path, iteration=-1, regions_config_path=None, cache_path=None):
+        self.model_path = model_path
+        self.data_path = data_path
+        self.iteration = iteration
         self.regions_config_path = regions_config_path or "/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422/regions_config.json"
         self.cache_path = cache_path or "/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422/cache.json"
         self.camera_id_to_region = {}
         self.regions_config = []
+        
+        # 初始化模型和场景
+        from arguments import ModelParams, PipelineParams
+        import argparse
+        
+        # 创建参数解析器
+        parser = argparse.ArgumentParser(description="Testing script parameters")
+        model = ModelParams(parser, sentinel=True)
+        pipeline = PipelineParams(parser)
+        
+        # 手动设置参数
+        args = parser.parse_args([])
+        args.model_path = model_path
+        args.source_path = data_path
+        args.iteration = iteration
+        
+        # 提取参数
+        self.dataset = model.extract(args)
+        self.pipeline = pipeline.extract(args)
+        
+        # 初始化 Gaussian 和 Scene
+        from gaussian_renderer import GaussianModel
+        from scene import Scene
+        
+        self.gaussians = GaussianModel(
+            self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank, self.dataset.appearance_dim, 
+            self.dataset.add_opacity_dist, self.dataset.add_cov_dist, self.dataset.add_color_dist, self.dataset.add_level, 
+            self.dataset.visible_threshold, self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
+        )
+        
+        self.scene = Scene(self.dataset, self.gaussians, load_iteration=iteration, shuffle=False, resolution_scales=self.dataset.resolution_scales)
+        self.gaussians.eval()
+        self.gaussians.plot_levels()
+        
+        # 初始化背景
+        import numpy as np
+        import torch
+        if self.dataset.random_background:
+            bg_color = [np.random.random(),np.random.random(),np.random.random()] 
+        elif self.dataset.white_background:
+            bg_color = [1.0, 1.0, 1.0]
+        else:
+            bg_color = [0.0, 0.0, 0.0]
+        self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+        
+        # 创建输出目录
+        import os
+        if not os.path.exists(self.dataset.model_path):
+            os.makedirs(self.dataset.model_path)
     
     def load_region_config(self):
         camera_id_to_region = {}
@@ -151,29 +203,17 @@ class Renderer:
             with open(os.path.join(model_path, name, "ours_{}".format(iteration), "per_view_count_level.json"), 'w') as fp:
                 json.dump(per_view_level_dict, fp, indent=True)     
     
-    def render_set_one_view(self, dataset : ModelParams, iteration : int, pipeline : PipelineParams, R, T, show_level : bool, ape_code : int = 10):
+    def render_set_one_view(self, R, T, show_level : bool = False, ape_code : int = 10):
+        """
+        渲染单个视图，只需要输入旋转矩阵 R 和平移向量 T
+        R: 旋转矩阵
+        T: 平移向量
+        show_level: 是否显示不同层级
+        ape_code: 外观编码
+        """
         with torch.no_grad():
-            gaussians = GaussianModel(
-                dataset.feat_dim, dataset.n_offsets, dataset.fork, dataset.use_feat_bank, dataset.appearance_dim, 
-                dataset.add_opacity_dist, dataset.add_cov_dist, dataset.add_color_dist, dataset.add_level, 
-                dataset.visible_threshold, dataset.dist2level, dataset.base_layer, dataset.progressive, dataset.extend
-            )
-            scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False, resolution_scales=dataset.resolution_scales)
-            gaussians.eval()
-            gaussians.plot_levels()
-            
-            if dataset.random_background:
-                bg_color = [np.random.random(),np.random.random(),np.random.random()] 
-            elif dataset.white_background:
-                bg_color = [1.0, 1.0, 1.0]
-            else:
-                bg_color = [0.0, 0.0, 0.0]
-            background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-            if not os.path.exists(dataset.model_path):
-                os.makedirs(dataset.model_path)
-            
             # 获取一个测试相机作为模板
-            test_cameras = scene.getTestCameras()
+            test_cameras = self.scene.getTestCameras()
             if not test_cameras:
                 print("Error: No test cameras available")
                 return
@@ -192,98 +232,95 @@ class Renderer:
             view.camera_center = view.world_view_transform.inverse()[3, :3]
             
             # 渲染单个视图
-            self.render_set(dataset.model_path, "test", scene.loaded_iter, [view], gaussians, pipeline, background, show_level, ape_code)
-    
-    def render_sets(self, dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, show_level : bool, ape_code : int):
-        with torch.no_grad():
-            gaussians = GaussianModel(
-                dataset.feat_dim, dataset.n_offsets, dataset.fork, dataset.use_feat_bank, dataset.appearance_dim, 
-                dataset.add_opacity_dist, dataset.add_cov_dist, dataset.add_color_dist, dataset.add_level, 
-                dataset.visible_threshold, dataset.dist2level, dataset.base_layer, dataset.progressive, dataset.extend
+            self.render_set(
+                self.dataset.model_path, 
+                "test", 
+                self.scene.loaded_iter, 
+                [view], 
+                self.gaussians, 
+                self.pipeline, 
+                self.background, 
+                show_level, 
+                ape_code
             )
-            scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False, resolution_scales=dataset.resolution_scales)
-            gaussians.eval()
-            gaussians.plot_levels()
-            if dataset.random_background:
-                bg_color = [np.random.random(),np.random.random(),np.random.random()] 
-            elif dataset.white_background:
-                bg_color = [1.0, 1.0, 1.0]
-            else:
-                bg_color = [0.0, 0.0, 0.0]
-            background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-            if not os.path.exists(dataset.model_path):
-                os.makedirs(dataset.model_path)
-            ape_code  = 10
+    
+    def render_sets(self, skip_train : bool = False, skip_test : bool = False, show_level : bool = False, ape_code : int = 10):
+        """
+        渲染训练集和测试集
+        skip_train: 是否跳过训练集
+        skip_test: 是否跳过测试集
+        show_level: 是否显示不同层级
+        ape_code: 外观编码
+        """
+        with torch.no_grad():
+            ape_code = 10
             if not skip_train:
                 num_batches = 588
                 for batch_idx in range(num_batches):
-                    batch_cameras = scene.get_unloaded_cameras(range(num_batches))
+                    batch_cameras = self.scene.get_unloaded_cameras(range(num_batches))
                     if not batch_cameras:
                         continue
                     print(f"Rendering train set, batch {batch_idx+1}/{num_batches}...")
-                    self.render_set(dataset.model_path, "train", scene.loaded_iter, batch_cameras, gaussians, pipeline, background, show_level, batch_idx)
+                    self.render_set(
+                        self.dataset.model_path, 
+                        "train", 
+                        self.scene.loaded_iter, 
+                        batch_cameras, 
+                        self.gaussians, 
+                        self.pipeline, 
+                        self.background, 
+                        show_level, 
+                        batch_idx
+                    )
                     del batch_cameras
                     torch.cuda.empty_cache()
 
             if not skip_test:
-                self.render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, show_level, ape_code)
+                self.render_set(
+                    self.dataset.model_path, 
+                    "test", 
+                    self.scene.loaded_iter, 
+                    self.scene.getTestCameras(), 
+                    self.gaussians, 
+                    self.pipeline, 
+                    self.background, 
+                    show_level, 
+                    ape_code
+                )
     
-    def run_from_cli(self, model_path, data_path, iteration=-1, ape=10, skip_train=False, skip_test=False, quiet=False, show_level=False):
+    def run_from_cli(self, skip_train=False, skip_test=False, show_level=False, ape=10):
         """
         从命令行参数运行渲染
-        model_path: 模型输出路径
-        data_path: 数据路径
         """
-        from arguments import ModelParams, PipelineParams, get_combined_args
         from utils.general_utils import safe_state
-        import argparse
         
-        parser = argparse.ArgumentParser(description="Testing script parameters")
-        model = ModelParams(parser, sentinel=True)
-        pipeline = PipelineParams(parser)
-        parser.add_argument("--iteration", default=iteration, type=int)
-        parser.add_argument("--ape", default=ape, type=int)
-        parser.add_argument("--skip_train", action="store_true", default=skip_train)
-        parser.add_argument("--skip_test", action="store_true", default=skip_test)
-        parser.add_argument("--quiet", action="store_true", default=quiet)
-        parser.add_argument("--show_level", action="store_true", default=show_level)
-        
-        # 手动设置模型路径和数据路径
-        args = parser.parse_args([])
-        args.model_path = model_path
-        args.source_path = data_path
-        
-        # 提取参数
-        model_params = model.extract(args)
-        pipeline_params = pipeline.extract(args)
-        
-        print("Rendering " + args.model_path)
-        safe_state(args.quiet)
+        print("Rendering " + self.dataset.model_path)
+        safe_state(False)  # 默认为非安静模式
         
         self.render_sets(
-            model_params, 
-            args.iteration, 
-            pipeline_params, 
-            args.skip_train, 
-            args.skip_test, 
-            args.show_level, 
-            args.ape
+            skip_train=skip_train,
+            skip_test=skip_test,
+            show_level=show_level,
+            ape_code=ape
         )
 
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, show_level, ape_code):
-    renderer = Renderer()
+    # 注意：此函数现在需要通过 Renderer 实例调用
+    # 但为了保持兼容性，这里创建一个临时实例
+    # 实际上，建议直接使用 Renderer 类的方法
+    renderer = Renderer(model_path, model_path)  # 这里使用 model_path 作为 data_path 的占位符
     renderer.render_set(model_path, name, iteration, views, gaussians, pipeline, background, show_level, ape_code)
 
 
-def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, show_level : bool, ape_code : int):
-    renderer = Renderer()
-    renderer.render_sets(dataset, iteration, pipeline, skip_train, skip_test, show_level, ape_code)
+def render_sets(model_path, data_path, skip_train : bool = False, skip_test : bool = False, show_level : bool = False, ape_code : int = 10, iteration : int = -1):
+    renderer = Renderer(model_path, data_path, iteration)
+    renderer.render_sets(skip_train, skip_test, show_level, ape_code)
 
 
-def render_set_one_view(dataset : ModelParams, iteration : int, pipeline : PipelineParams, R, T, show_level : bool, ape_code : int = 10):
-    renderer = Renderer()
-    renderer.render_set_one_view(dataset, iteration, pipeline, R, T, show_level, ape_code)
+def render_set_one_view(model_path, data_path, R, T, show_level : bool = False, ape_code : int = 10, iteration : int = -1):
+    renderer = Renderer(model_path, data_path, iteration)
+    renderer.render_set_one_view(R, T, show_level, ape_code)
 
 
 if __name__ == "__main__":
@@ -297,21 +334,20 @@ if __name__ == "__main__":
     parser.add_argument("--ape", default=10, type=int)
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
-    parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--show_level", action="store_true")
     
     args = parser.parse_args()
     
     # 创建 Renderer 实例并运行
-    renderer = Renderer()
-    renderer.run_from_cli(
+    renderer = Renderer(
         model_path=args.model_path,
         data_path=args.data_path,
-        iteration=args.iteration,
-        ape=args.ape,
+        iteration=args.iteration
+    )
+    renderer.run_from_cli(
         skip_train=args.skip_train,
         skip_test=args.skip_test,
-        quiet=args.quiet,
-        show_level=args.show_level
+        show_level=args.show_level,
+        ape=args.ape
     )
     
