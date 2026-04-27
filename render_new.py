@@ -58,7 +58,7 @@ class Renderer:
                 self.feat_dim = 32
                 self.n_offsets = 10
                 self.fork = 4
-                self.use_feat_bank = True
+                self.use_feat_bank = False
                 self.appearance_dim = 32
                 self.add_opacity_dist = False
                 self.add_cov_dist = False
@@ -87,7 +87,7 @@ class Renderer:
 
         # 3. 加载Gaussian模型
         self.gaussians = GaussianModel(
-            self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank,
+            self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, False,  # Explicitly set use_feat_bank=False
             self.dataset.appearance_dim, self.dataset.add_opacity_dist, self.dataset.add_cov_dist,
             self.dataset.add_color_dist, self.dataset.add_level, self.dataset.visible_threshold,
             self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
