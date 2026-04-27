@@ -52,10 +52,11 @@ class Renderer:
                 self.images = "images"
                 self.resolution = -1
                 self.white_background = white_background
+                self.random_background = False
                 self.data_device = "cuda"
                 self.eval = False
                 self.sh_degree = 3
-                self.feat_dim = 32
+                self.feature_dim = 32
                 self.n_offsets = 10
                 self.fork = 4
                 self.use_feat_bank = True
@@ -70,6 +71,9 @@ class Renderer:
                 self.progressive = False
                 self.extend = 1.1
                 self.resolution_scales = [1.0]
+                self.undistorted = False
+                self.ratio = 1.0
+                self.ds = 1
 
         args = DummyArgs()
         
