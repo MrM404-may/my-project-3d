@@ -51,8 +51,6 @@ class Renderer:
                 self.n_offsets = 16
                 self.fork = 1
                 self.use_feat_bank = True
-                self.source_path = self.source_path
-                self.model_path = self.model_path
                 self.images = "images"
                 self.resolution = -1
                 self.white_background = False
