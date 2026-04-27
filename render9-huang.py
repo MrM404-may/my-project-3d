@@ -317,14 +317,22 @@ class Renderer:
             # 使用找到的 ape_code 或默认值
             final_ape_code = ape_code if ape_code is not None else auto_ape_code
             
-            # 获取一个测试相机作为模板
+            # 尝试获取测试相机作为模板
+            view = None
             test_cameras = self.scene.getTestCameras()
-            if not test_cameras:
-                print("Error: No test cameras available")
-                return
+            if test_cameras:
+                view = test_cameras[0]
+                print("✅ 使用测试相机作为模板")
+            else:
+                # 如果没有测试相机，尝试使用训练相机
+                train_cameras = self.scene.getTrainCameras()
+                if train_cameras:
+                    view = train_cameras[0]
+                    print("✅ 使用训练相机作为模板")
+                else:
+                    print("Error: No cameras available")
+                    return
             
-            # 使用第一个相机作为模板
-            view = test_cameras[0]
             # 设置相机的旋转矩阵和平移向量
             view.R = R
             view.T = T
