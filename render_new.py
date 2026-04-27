@@ -82,7 +82,7 @@ class Renderer:
         # 6. 初始化系统状态
         safe_state(False)
 
-        # 7. 加载Gaussian模型（使用原始代码结构）
+        # 7. 加载Gaussian模型（绕过Scene初始化）
         print(f"Loading trained model at iteration {iteration}")
         self.gaussians = GaussianModel(
             self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank, self.dataset.appearance_dim,
@@ -90,11 +90,37 @@ class Renderer:
             self.dataset.visible_threshold, self.dataset.dist2level, self.dataset.base_layer, self.dataset.progressive, self.dataset.extend
         )
         
-        # 8. 创建Scene对象（复制自render9-huang.py）
-        scene = Scene(self.dataset, self.gaussians, load_iteration=iteration, shuffle=False, resolution_scales=self.dataset.resolution_scales)
+        # 8. 直接加载模型文件（绕过Scene的相机加载）
+        if iteration == -1:
+            # 查找最新的迭代
+            import glob
+            import os
+            iteration_dirs = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
+            if not iteration_dirs:
+                raise FileNotFoundError(f"No iteration directories found in {os.path.join(model_path, 'point_cloud')}")
+            iterations = [int(d.split('_')[-1]) for d in iteration_dirs]
+            self.iteration = max(iterations)
+        else:
+            self.iteration = iteration
+        
+        # 加载点云
+        ply_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}", "point_cloud.ply")
+        if not os.path.exists(ply_path):
+            # 尝试加载merged_anchors.ply
+            ply_path = os.path.join(model_path, "merged_anchors.ply")
+            if not os.path.exists(ply_path):
+                raise FileNotFoundError(f"No PLY file found at {ply_path}")
+        
+        self.gaussians.load_ply_sparse_gaussian(ply_path)
+        
+        # 加载MLP checkpoint
+        mlp_path = os.path.join(model_path, "point_cloud", f"iteration_{self.iteration}")
+        if not os.path.exists(mlp_path):
+            raise FileNotFoundError(f"MLP checkpoint directory not found at {mlp_path}")
+        self.gaussians.load_mlp_checkpoints(mlp_path)
+        
         self.gaussians.eval()
         self.gaussians.plot_levels()
-        self.iteration = scene.loaded_iter
 
         # 9. 设置背景
         if self.dataset.random_background:
