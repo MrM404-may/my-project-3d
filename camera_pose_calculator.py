@@ -58,6 +58,12 @@ class CameraPoseCalculator:
                 self.iteration = None
                 self.quiet = True
                 self.source_path = None
+                self.images = "images"
+                self.eval = False
+                self.ds = 1
+                self.white_background = False
+                self.random_background = False
+                self.undistorted = False
         
         # 这里需要使用正确的作用域
         args = Args()
@@ -67,6 +73,12 @@ class CameraPoseCalculator:
         args.source_path = self.model_path
         
         self.model_params = model.extract(args)
+        
+        # 确保source_path被正确设置
+        if not hasattr(self.model_params, 'source_path') or not self.model_params.source_path:
+            self.model_params.source_path = self.model_path
+        
+        print(f"Scene will be initialized with source_path: {self.model_params.source_path}")
         
         # 加载场景以获取相机信息
         with torch.no_grad():
