@@ -227,6 +227,48 @@ class Renderer:
 
             if not skip_test:
                 self.render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, show_level, ape_code)
+    
+    def run_from_cli(self, model_path, data_path, iteration=-1, ape=10, skip_train=False, skip_test=False, quiet=False, show_level=False):
+        """
+        从命令行参数运行渲染
+        model_path: 模型输出路径
+        data_path: 数据路径
+        """
+        from arguments import ModelParams, PipelineParams, get_combined_args
+        from utils.general_utils import safe_state
+        import argparse
+        
+        parser = argparse.ArgumentParser(description="Testing script parameters")
+        model = ModelParams(parser, sentinel=True)
+        pipeline = PipelineParams(parser)
+        parser.add_argument("--iteration", default=iteration, type=int)
+        parser.add_argument("--ape", default=ape, type=int)
+        parser.add_argument("--skip_train", action="store_true", default=skip_train)
+        parser.add_argument("--skip_test", action="store_true", default=skip_test)
+        parser.add_argument("--quiet", action="store_true", default=quiet)
+        parser.add_argument("--show_level", action="store_true", default=show_level)
+        
+        # 手动设置模型路径和数据路径
+        args = parser.parse_args([])
+        args.model_path = model_path
+        args.source_path = data_path
+        
+        # 提取参数
+        model_params = model.extract(args)
+        pipeline_params = pipeline.extract(args)
+        
+        print("Rendering " + args.model_path)
+        safe_state(args.quiet)
+        
+        self.render_sets(
+            model_params, 
+            args.iteration, 
+            pipeline_params, 
+            args.skip_train, 
+            args.skip_test, 
+            args.show_level, 
+            args.ape
+        )
 
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, show_level, ape_code):
@@ -245,19 +287,31 @@ def render_set_one_view(dataset : ModelParams, iteration : int, pipeline : Pipel
 
 
 if __name__ == "__main__":
+    from argparse import ArgumentParser
+    
+    # 简化命令行参数，只接受模型路径和数据路径
     parser = ArgumentParser(description="Testing script parameters")
-    model = ModelParams(parser, sentinel=True)
-    pipeline = PipelineParams(parser)
+    parser.add_argument("model_path", type=str, help="Model output path")
+    parser.add_argument("data_path", type=str, help="Data path")
     parser.add_argument("--iteration", default=-1, type=int)
     parser.add_argument("--ape", default=10, type=int)
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--show_level", action="store_true")
-    args = get_combined_args(parser)
-    print("Rendering " + args.model_path)
-
-    safe_state(args.quiet)
-
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.show_level, args.ape)
+    
+    args = parser.parse_args()
+    
+    # 创建 Renderer 实例并运行
+    renderer = Renderer()
+    renderer.run_from_cli(
+        model_path=args.model_path,
+        data_path=args.data_path,
+        iteration=args.iteration,
+        ape=args.ape,
+        skip_train=args.skip_train,
+        skip_test=args.skip_test,
+        quiet=args.quiet,
+        show_level=args.show_level
+    )
     
