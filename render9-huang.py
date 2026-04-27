@@ -376,8 +376,10 @@ class Renderer:
             Rt[:3, 3] = -R_np.transpose() @ T_np
             Rt[3, 3] = 1.0
             
-            view.world_view_transform = torch.tensor(Rt).transpose(0, 1).cuda()
-            view.projection_matrix = getProjectionMatrix(znear=view.znear, zfar=view.zfar, fovX=view.FoVx, fovY=view.FoVy).transpose(0,1).cuda()
+            # 确保数据类型一致
+            view.world_view_transform = torch.tensor(Rt, dtype=torch.float32).transpose(0, 1).cuda()
+            projection_matrix = getProjectionMatrix(znear=view.znear, zfar=view.zfar, fovX=view.FoVx, fovY=view.FoVy)
+            view.projection_matrix = projection_matrix.transpose(0, 1).cuda().float()
             view.full_proj_transform = (view.world_view_transform.unsqueeze(0).bmm(view.projection_matrix.unsqueeze(0))).squeeze(0)
             
             # 渲染单个视图
