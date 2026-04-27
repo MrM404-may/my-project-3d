@@ -117,7 +117,17 @@ class Renderer:
         self.gaussians.load_ply_sparse_gaussian(ply_path)
         
         # 加载MLP checkpoint
-        self.gaussians.load_mlp_checkpoints(os.path.join(model_path, "mlp"))
+        mlp_dir = os.path.join(model_path, f"iteration_{self.iteration}")
+        if not os.path.exists(mlp_dir):
+            # 尝试从其他迭代目录加载
+            import glob
+            iteration_dirs = glob.glob(os.path.join(model_path, "iteration_*"))
+            if iteration_dirs:
+                mlp_dir = max(iteration_dirs, key=lambda x: int(x.split('_')[-1]))
+            else:
+                raise FileNotFoundError(f"No iteration directories found in {model_path}")
+        
+        self.gaussians.load_mlp_checkpoints(mlp_dir)
         
         self.gaussians.eval()
 
@@ -128,7 +138,16 @@ class Renderer:
         # 5. 加载cameras.json
         if os.path.exists(cameras_json_path):
             with open(cameras_json_path, 'r', encoding='utf-8') as f:
-                self.cameras_json = json.load(f)
+                cameras_data = json.load(f)
+            
+            # 将列表转换为字典，使用相机ID作为键
+            self.cameras_json = {}
+            if isinstance(cameras_data, list):
+                for cam in cameras_data:
+                    cam_id = str(cam.get('id', len(self.cameras_json)))
+                    self.cameras_json[cam_id] = cam
+            else:
+                self.cameras_json = cameras_data
         else:
             raise FileNotFoundError(f"cameras.json not found at {cameras_json_path}")
 
