@@ -229,7 +229,14 @@ def readCamerasFromTransforms(path, transformsfile, random_background, white_bac
         except:
             fovx = None
 
-        frames = contents["frames"]
+        # 处理两种格式：一种是带frames键的字典，一种是直接的列表
+        if isinstance(contents, dict) and "frames" in contents:
+            frames = contents["frames"]
+        elif isinstance(contents, list):
+            # 直接使用列表作为frames
+            frames = contents
+        else:
+            raise ValueError(f"Invalid format for {transformsfile}: expected either a dict with 'frames' key or a list")
         # check if filename already contain postfix
         if frames[0]["file_path"].split('.')[-1] in ['jpg', 'jpeg', 'JPG', 'png']:
             extension = ""
