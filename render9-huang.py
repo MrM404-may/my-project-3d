@@ -33,14 +33,16 @@ from gaussian_renderer import GaussianModel
 
 
 class Renderer:
-    def __init__(self, model_path, data_path, iteration=-1, regions_config_path=None, cache_path=None):
+    def __init__(self, model_path, data_path, iteration=-1, regions_config_path=None, cache_path=None, cameras_json_path=None):
         self.model_path = model_path
         self.data_path = data_path
         self.iteration = iteration
         self.regions_config_path = regions_config_path or "/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422/regions_config.json"
         self.cache_path = cache_path or "/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422/cache.json"
+        self.cameras_json_path = cameras_json_path or os.path.join(data_path, "cameras.json")
         self.camera_id_to_region = {}
         self.regions_config = []
+        self.cameras_data = []
         
         # 初始化模型和场景
         from arguments import ModelParams, PipelineParams, get_combined_args
@@ -74,6 +76,9 @@ class Renderer:
         self.dataset = model.extract(args)
         self.pipeline = pipeline.extract(args)
         
+        # 加载 cameras.json 文件
+        self.load_cameras_data()
+        
         # 初始化 Gaussian 和 Scene
         from gaussian_renderer import GaussianModel
         from scene import Scene
@@ -103,6 +108,80 @@ class Renderer:
         import os
         if not os.path.exists(self.dataset.model_path):
             os.makedirs(self.dataset.model_path)
+    
+    def load_cameras_data(self):
+        """
+        加载 cameras.json 文件
+        """
+        import json
+        import os
+        
+        if os.path.exists(self.cameras_json_path):
+            try:
+                with open(self.cameras_json_path, 'r', encoding='utf-8') as f:
+                    self.cameras_data = json.load(f)
+                print(f"✅ 成功加载 cameras.json 文件，共 {len(self.cameras_data)} 个相机")
+            except Exception as e:
+                print(f"❌ 加载 cameras.json 文件失败: {e}")
+                self.cameras_data = []
+        else:
+            print(f"❌ cameras.json 文件不存在: {self.cameras_json_path}")
+            self.cameras_data = []
+    
+    def find_similar_camera(self, R, T):
+        """
+        找到与输入 R 和 T 最相似的相机
+        R: 旋转矩阵
+        T: 平移向量
+        返回: (最相似的相机ID, 对应的region, ape_code)
+        """
+        import numpy as np
+        
+        if not self.cameras_data:
+            print("⚠️  没有加载相机数据")
+            return None, None, None
+        
+        if not self.camera_id_to_region:
+            self.load_region_config()
+        
+        # 转换输入的 R 和 T 为 numpy 数组
+        R_input = np.array(R)
+        T_input = np.array(T)
+        
+        min_distance = float('inf')
+        best_camera = None
+        
+        for camera in self.cameras_data:
+            try:
+                # 获取相机的位置和旋转
+                cam_position = np.array(camera['position'])
+                cam_rotation = np.array(camera['rotation'])
+                
+                # 计算位置距离
+                position_distance = np.linalg.norm(T_input - cam_position)
+                
+                # 计算旋转相似度（使用矩阵余弦相似度）
+                rotation_similarity = np.sum(R_input * cam_rotation) / (np.linalg.norm(R_input) * np.linalg.norm(cam_rotation))
+                rotation_distance = 1 - rotation_similarity
+                
+                # 综合距离（位置距离 + 旋转距离）
+                total_distance = position_distance + rotation_distance
+                
+                if total_distance < min_distance:
+                    min_distance = total_distance
+                    best_camera = camera
+            except Exception as e:
+                continue
+        
+        if best_camera:
+            camera_id = str(best_camera['id'])
+            region = self.camera_id_to_region.get(camera_id, 0)
+            ape_code = best_camera['id']  # id 对应 ape_code
+            print(f"✅ 找到最相似的相机: ID={camera_id}, 区域={region}, APE代码={ape_code}")
+            return camera_id, region, ape_code
+        else:
+            print("⚠️  没有找到相似的相机")
+            return None, 0, 10  # 返回默认值
     
     def load_region_config(self):
         camera_id_to_region = {}
@@ -170,14 +249,20 @@ class Renderer:
         all_cameras_info = []
         camera_region = 0
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-            camera_region = self.camera_id_to_region.get(str(getattr(view, 'uid', '')), 0)
+            # 尝试从视图的属性中获取区域信息
+            if hasattr(view, 'camera_region'):
+                camera_region = view.camera_region
+            else:
+                # 否则从相机ID映射中获取
+                camera_region = self.camera_id_to_region.get(str(getattr(view, 'uid', '')), 0)
+            
             if hasattr(camera_region, '__len__') and len(camera_region) > 2:
                 print(f"Warning: Camera {view.uid} has multiple region matches: {camera_region}. Using the first match.")
             torch.cuda.synchronize(); t0 = time.time()
 
             gaussians.set_anchor_mask(view.camera_center, iteration, view.resolution_scale)
             voxel_visible_mask = prefilter_voxel(view, gaussians, pipeline, background)
-            render_pkg = render(view, gaussians, pipeline, background, visible_mask=voxel_visible_mask, ape_code=idx, camera_region=camera_region)
+            render_pkg = render(view, gaussians, pipeline, background, visible_mask=voxel_visible_mask, ape_code=ape_code, camera_region=camera_region)
             
             torch.cuda.synchronize(); t1 = time.time()
             t_list.append(t1-t0)
@@ -216,15 +301,21 @@ class Renderer:
             with open(os.path.join(model_path, name, "ours_{}".format(iteration), "per_view_count_level.json"), 'w') as fp:
                 json.dump(per_view_level_dict, fp, indent=True)     
     
-    def render_set_one_view(self, R, T, show_level : bool = False, ape_code : int = 10):
+    def render_set_one_view(self, R, T, show_level : bool = False, ape_code : int = None):
         """
         渲染单个视图，只需要输入旋转矩阵 R 和平移向量 T
         R: 旋转矩阵
         T: 平移向量
         show_level: 是否显示不同层级
-        ape_code: 外观编码
+        ape_code: 外观编码（如果为 None，则自动从相似相机中获取）
         """
         with torch.no_grad():
+            # 找到最相似的相机
+            _, camera_region, auto_ape_code = self.find_similar_camera(R, T)
+            
+            # 使用找到的 ape_code 或默认值
+            final_ape_code = ape_code if ape_code is not None else auto_ape_code
+            
             # 获取一个测试相机作为模板
             test_cameras = self.scene.getTestCameras()
             if not test_cameras:
@@ -254,7 +345,7 @@ class Renderer:
                 self.pipeline, 
                 self.background, 
                 show_level, 
-                ape_code
+                final_ape_code
             )
     
     def render_sets(self, skip_train : bool = False, skip_test : bool = False, show_level : bool = False, ape_code : int = 10):
