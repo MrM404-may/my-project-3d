@@ -110,8 +110,12 @@ class Renderer:
         # Extract camera positions and rotations for similarity calculation
         for cam_data in self.cameras_data:
             self.camera_positions.append(np.array(cam_data['position']))
-            self.camera_rotations.append(np.array(cam_data['rotation']))
-            self.camera_uids.append(cam_data['uid'])
+            # Convert 3x3 rotation matrix to quaternion for easier similarity calculation
+            self.camera_rotations.append(self.rotation_matrix_to_quaternion(np.array(cam_data['rotation'])))
+            self.camera_uids.append(cam_data['id'])
+        
+        # Store all camera data for easy access
+        self.camera_dict = {cam_data['id']: cam_data for cam_data in self.cameras_data}
         
         # Load one image (first camera)
         if self.scene.train_cameras:
@@ -157,6 +161,43 @@ class Renderer:
             [2*x*z - 2*w*y, 2*y*z + 2*w*x, 1 - 2*x*x - 2*y*y]
         ])
         return R
+    
+    def rotation_matrix_to_quaternion(self, R):
+        """
+        Convert 3x3 rotation matrix to quaternion [w, x, y, z]
+        """
+        # Ensure the rotation matrix is a numpy array
+        R = np.array(R)
+        
+        # Calculate trace of the matrix
+        trace = np.trace(R)
+        
+        if trace > 0:
+            s = 2.0 * np.sqrt(trace + 1.0)
+            w = 0.25 * s
+            x = (R[2, 1] - R[1, 2]) / s
+            y = (R[0, 2] - R[2, 0]) / s
+            z = (R[1, 0] - R[0, 1]) / s
+        elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+            s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+            w = (R[2, 1] - R[1, 2]) / s
+            x = 0.25 * s
+            y = (R[0, 1] + R[1, 0]) / s
+            z = (R[0, 2] + R[2, 0]) / s
+        elif R[1, 1] > R[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+            w = (R[0, 2] - R[2, 0]) / s
+            x = (R[0, 1] + R[1, 0]) / s
+            y = 0.25 * s
+            z = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+            w = (R[1, 0] - R[0, 1]) / s
+            x = (R[0, 2] + R[2, 0]) / s
+            y = (R[1, 2] + R[2, 1]) / s
+            z = 0.25 * s
+        
+        return np.array([w, x, y, z])
     
     def render_new(self, position, rotation, output_path):
         """
@@ -213,6 +254,72 @@ class Renderer:
         print(f"Render completed in {t1 - t0:.4f} seconds")
         print(f"Rendered image saved to: {output_path}")
         print(f"Most similar camera: {similar_camera_uid}")
+        print(f"Camera region: {camera_region}")
+        print(f"APE code: {ape_code}")
+    
+    def render_training_camera(self, camera_id, output_path):
+        """
+        Render a specific training camera by ID
+        """
+        if camera_id not in self.camera_dict:
+            raise ValueError(f"Camera ID {camera_id} not found in cameras data")
+        
+        cam_data = self.camera_dict[camera_id]
+        
+        # Get region for this camera
+        camera_region = self.camera_id_to_region.get(str(camera_id), 0)
+        
+        # Use camera ID as APE code
+        ape_code = camera_id
+        
+        # Get the actual camera object from the scene if available
+        actual_camera = None
+        if hasattr(self.scene, 'camera_id_map') and camera_id in self.scene.camera_id_map:
+            actual_camera = self.scene.camera_id_map[camera_id]
+        else:
+            # Fallback to first camera as template
+            actual_camera = next(iter(self.scene.train_cameras.values()))[0]
+        
+        # Create new camera from cameras.json data
+        position = np.array(cam_data['position'])
+        rotation_matrix = np.array(cam_data['rotation'])
+        
+        # Note: The Camera class expects R as a 3x3 matrix and T as a translation vector
+        # We need to make sure we're passing them in the correct format
+        new_camera = Camera(
+            colmap_id=camera_id,
+            R=rotation_matrix,
+            T=position,
+            FoVx=actual_camera.FoVx,
+            FoVy=actual_camera.FoVy,
+            image_path=actual_camera.image_path,
+            gt_alpha_mask_path=getattr(actual_camera, 'gt_alpha_mask_path', None),
+            image_name=cam_data['img_name'],
+            resolution_scale=actual_camera.resolution_scale,
+            uid=camera_id,
+            data_device="cuda"
+        )
+        
+        # Render the viewpoint
+        torch.cuda.synchronize()
+        t0 = time.time()
+        
+        self.gaussians.set_anchor_mask(new_camera.camera_center, self.scene.loaded_iter, 1.0)
+        voxel_visible_mask = prefilter_voxel(new_camera, self.gaussians, self.pipeline, self.background)
+        render_pkg = render(new_camera, self.gaussians, self.pipeline, self.background, visible_mask=voxel_visible_mask, ape_code=ape_code, camera_region=camera_region)
+        
+        torch.cuda.synchronize()
+        t1 = time.time()
+        
+        # Save the rendered image
+        rendering = torch.clamp(render_pkg["render"], 0.0, 1.0)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        torchvision.utils.save_image(rendering, output_path)
+        
+        print(f"Render completed in {t1 - t0:.4f} seconds")
+        print(f"Rendered image saved to: {output_path}")
+        print(f"Camera ID: {camera_id}")
+        print(f"Image name: {cam_data['img_name']}")
         print(f"Camera region: {camera_region}")
         print(f"APE code: {ape_code}")
 
