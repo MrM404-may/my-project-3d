@@ -94,7 +94,6 @@ class Renderer:
         if iteration == -1:
             # 查找最新的迭代
             import glob
-            import os
             iteration_dirs = glob.glob(os.path.join(model_path, "point_cloud", "iteration_*"))
             if not iteration_dirs:
                 raise FileNotFoundError(f"No iteration directories found in {os.path.join(model_path, 'point_cloud')}")
