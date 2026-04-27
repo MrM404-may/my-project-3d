@@ -48,14 +48,18 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     # 获取锚点的region属性
     region = pc._region[visible_mask]
     # 过滤出属于当前相机区域的锚点
-    region_mask = (region == camera_region)
-    if region_mask.sum() == 0:
-        print("None")
-        # 如果没有属于当前区域的锚点，返回空
-        if is_training:
-            return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, dtype=torch.bool, device=pc.get_anchor.device)
-        else:
-            return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device)
+    if is_training:
+        region_mask = (region == camera_region)
+        if region_mask.sum() == 0:
+            print("None")
+            # 如果没有属于当前区域的锚点，返回空
+            if is_training:
+                return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, dtype=torch.bool, device=pc.get_anchor.device)
+            else:
+                return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device)
+    else:
+        # 不按区域过滤，使用所有可见的锚点
+        region_mask = torch.ones_like(region, dtype=torch.bool)
 
     anchor = pc.get_anchor[visible_mask][region_mask]
     feat = pc.get_anchor_feat[visible_mask][region_mask]
