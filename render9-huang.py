@@ -336,6 +336,8 @@ class Renderer:
             # 设置相机的旋转矩阵和平移向量
             view.R = R
             view.T = T
+            # 设置相机的区域信息
+            view.camera_region = camera_region
             
             # 重新计算相机的位姿相关属性
             import numpy as np
