@@ -9,32 +9,32 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 import os
-from os import makedirs
 import torch
 import numpy as np
-
-import subprocess
-cmd = 'nvidia-smi -q -d Memory |grep -A4 GPU|grep Used'
-result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE).stdout.decode().split('\n')
-os.environ['CUDA_VISIBLE_DEVICES']=str(np.argmin([int(x.split()[2]) for x in result[:-1]]))
-
-os.system('echo $CUDA_VISIBLE_DEVICES')
-
-from scene import Scene
 import json
 import time
+from tqdm import tqdm
+
+# 导入必要的模块
+from scene import Scene
 from gaussian_renderer import render, prefilter_voxel
 import torchvision
-from tqdm import tqdm
 from utils.general_utils import safe_state
-from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 
 
 class Renderer:
     def __init__(self, model_path, data_path, iteration=-1, regions_config_path=None, cache_path=None, cameras_json_path=None):
-        import os
+        """
+        初始化 Renderer
+        model_path: 模型输出路径
+        data_path: 数据路径
+        iteration: 迭代次数
+        regions_config_path: 区域配置文件路径
+        cache_path: 缓存文件路径
+        cameras_json_path: 相机数据文件路径
+        """
         self.model_path = model_path
         self.data_path = data_path
         self.iteration = iteration
@@ -81,9 +81,6 @@ class Renderer:
         self.load_cameras_data()
         
         # 初始化 Gaussian 和 Scene
-        from gaussian_renderer import GaussianModel
-        from scene import Scene
-        
         self.gaussians = GaussianModel(
             self.dataset.feat_dim, self.dataset.n_offsets, self.dataset.fork, self.dataset.use_feat_bank, self.dataset.appearance_dim, 
             self.dataset.add_opacity_dist, self.dataset.add_cov_dist, self.dataset.add_color_dist, self.dataset.add_level, 
@@ -95,8 +92,6 @@ class Renderer:
         self.gaussians.plot_levels()
         
         # 初始化背景
-        import numpy as np
-        import torch
         if self.dataset.random_background:
             bg_color = [np.random.random(),np.random.random(),np.random.random()] 
         elif self.dataset.white_background:
@@ -106,7 +101,6 @@ class Renderer:
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
         
         # 创建输出目录
-        import os
         if not os.path.exists(self.dataset.model_path):
             os.makedirs(self.dataset.model_path)
     
@@ -114,9 +108,6 @@ class Renderer:
         """
         加载 cameras.json 文件
         """
-        import json
-        import os
-        
         if os.path.exists(self.cameras_json_path):
             try:
                 with open(self.cameras_json_path, 'r', encoding='utf-8') as f:
@@ -136,8 +127,6 @@ class Renderer:
         T: 平移向量
         返回: (最相似的相机ID, 对应的region, ape_code)
         """
-        import numpy as np
-        
         if not self.cameras_data:
             print("⚠️  没有加载相机数据")
             return None, None, None
@@ -185,6 +174,9 @@ class Renderer:
             return None, 0, 10  # 返回默认值
     
     def load_region_config(self):
+        """
+        加载区域配置和相机ID到区域的映射
+        """
         camera_id_to_region = {}
         if os.path.exists(self.regions_config_path):
             with open(self.regions_config_path, 'r', encoding='utf-8') as f:
@@ -229,17 +221,20 @@ class Renderer:
         return camera_id_to_region
     
     def render_set(self, model_path, name, iteration, views, gaussians, pipeline, background, show_level, ape_code):
+        """
+        渲染一组视图
+        """
         render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
-        makedirs(render_path, exist_ok=True)
+        os.makedirs(render_path, exist_ok=True)
         gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
         inv_depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "inv_depth")
-        makedirs(inv_depth_path, exist_ok=True)
+        os.makedirs(inv_depth_path, exist_ok=True)
 
-        makedirs(gts_path, exist_ok=True)
+        os.makedirs(gts_path, exist_ok=True)
         if show_level:
             render_level_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders_level")
-            makedirs(render_level_path, exist_ok=True)
+            os.makedirs(render_level_path, exist_ok=True)
 
         if not self.camera_id_to_region:
             self.load_region_config()
@@ -406,67 +401,3 @@ class Renderer:
                     show_level, 
                     ape_code
                 )
-    
-    def run_from_cli(self, skip_train=False, skip_test=False, show_level=False, ape=10):
-        """
-        从命令行参数运行渲染
-        """
-        from utils.general_utils import safe_state
-        
-        print("Rendering " + self.dataset.model_path)
-        safe_state(False)  # 默认为非安静模式
-        
-        self.render_sets(
-            skip_train=skip_train,
-            skip_test=skip_test,
-            show_level=show_level,
-            ape_code=ape
-        )
-
-
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background, show_level, ape_code):
-    # 注意：此函数现在需要通过 Renderer 实例调用
-    # 但为了保持兼容性，这里创建一个临时实例
-    # 实际上，建议直接使用 Renderer 类的方法
-    renderer = Renderer(model_path, model_path)  # 这里使用 model_path 作为 data_path 的占位符
-    renderer.render_set(model_path, name, iteration, views, gaussians, pipeline, background, show_level, ape_code)
-
-
-def render_sets(model_path, data_path, skip_train : bool = False, skip_test : bool = False, show_level : bool = False, ape_code : int = 10, iteration : int = -1):
-    renderer = Renderer(model_path, data_path, iteration)
-    renderer.render_sets(skip_train, skip_test, show_level, ape_code)
-
-
-def render_set_one_view(model_path, data_path, R, T, show_level : bool = False, ape_code : int = 10, iteration : int = -1):
-    renderer = Renderer(model_path, data_path, iteration)
-    renderer.render_set_one_view(R, T, show_level, ape_code)
-
-
-if __name__ == "__main__":
-    from argparse import ArgumentParser
-    
-    # 简化命令行参数，只接受模型路径和数据路径
-    parser = ArgumentParser(description="Testing script parameters")
-    parser.add_argument("model_path", type=str, help="Model output path")
-    parser.add_argument("data_path", type=str, help="Data path")
-    parser.add_argument("--iteration", default=-1, type=int)
-    parser.add_argument("--ape", default=10, type=int)
-    parser.add_argument("--skip_train", action="store_true")
-    parser.add_argument("--skip_test", action="store_true")
-    parser.add_argument("--show_level", action="store_true")
-    
-    args = parser.parse_args()
-    
-    # 创建 Renderer 实例并运行
-    renderer = Renderer(
-        model_path=args.model_path,
-        data_path=args.data_path,
-        iteration=args.iteration
-    )
-    renderer.run_from_cli(
-        skip_train=args.skip_train,
-        skip_test=args.skip_test,
-        show_level=args.show_level,
-        ape=args.ape
-    )
-    
