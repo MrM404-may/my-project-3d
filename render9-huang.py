@@ -366,12 +366,19 @@ class Renderer:
             R_np = np.array(R)
             T_np = np.array(T)
             
-            # 使用默认的 translate 和 scale 参数，而不是 view.trans 和 view.scale
-            # 这样可以确保计算结果只依赖于输入的 R 和 T
-            view.world_view_transform = torch.tensor(getWorld2View2(R_np, T_np)).transpose(0, 1).cuda()
+            # 直接设置相机的位置为输入的 T
+            view.camera_center = torch.tensor(T_np, dtype=torch.float32, device="cuda")
+            
+            # 构建世界到视图的变换矩阵
+            # 注意：Rt 矩阵的构造应该是 R.transpose() 和 -R.transpose() @ T
+            Rt = np.zeros((4, 4))
+            Rt[:3, :3] = R_np.transpose()
+            Rt[:3, 3] = -R_np.transpose() @ T_np
+            Rt[3, 3] = 1.0
+            
+            view.world_view_transform = torch.tensor(Rt).transpose(0, 1).cuda()
             view.projection_matrix = getProjectionMatrix(znear=view.znear, zfar=view.zfar, fovX=view.FoVx, fovY=view.FoVy).transpose(0,1).cuda()
             view.full_proj_transform = (view.world_view_transform.unsqueeze(0).bmm(view.projection_matrix.unsqueeze(0))).squeeze(0)
-            view.camera_center = view.world_view_transform.inverse()[3, :3]
             
             # 渲染单个视图
             self.render_set(
