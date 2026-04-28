@@ -124,7 +124,7 @@ class Renderer:
                 print(f"❌ 加载 cameras.json 文件失败: {e}")
                 self.cameras_data = []
         else:
-            print(f"❌ cameras.json 文件不存在: {self.cameras_json_path}")
+            print(f"❌ cameras.json 文件不存在: {self.cameras_json_path")
             self.cameras_data = []
     
     def find_similar_camera(self, R, T):
@@ -438,3 +438,54 @@ class Renderer:
                     show_level, 
                     ape_code
                 )
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import sys
+    
+    parser = argparse.ArgumentParser(description="渲染单个视图")
+    parser.add_argument("--model_path", required=True, type=str, help="模型输出路径")
+    parser.add_argument("--data_path", required=True, type=str, help="数据路径")
+    parser.add_argument("--rotation_w", type=str, help="相机到世界的旋转矩阵（JSON 格式）")
+    parser.add_argument("--p_w", type=str, help="相机在世界坐标系中的位置（JSON 格式）")
+    parser.add_argument("--show_level", action="store_true", help="是否显示不同层级")
+    parser.add_argument("--ape_code", type=int, default=None, help="外观编码（可选）")
+    parser.add_argument("--render_all", action="store_true", help="是否渲染所有训练和测试视图")
+    parser.add_argument("--skip_train", action="store_true", help="是否跳过训练视图")
+    parser.add_argument("--skip_test", action="store_true", help="是否跳过测试视图")
+    
+    args = parser.parse_args()
+    
+    if args.render_all:
+        print("初始化 Renderer...")
+        renderer = Renderer(
+            model_path=args.model_path,
+            data_path=args.data_path
+        )
+        print("渲染所有视图...")
+        renderer.render_sets(
+            skip_train=args.skip_train,
+            skip_test=args.skip_test,
+            show_level=args.show_level,
+            ape_code=args.ape_code
+        )
+        print("渲染完成！")
+    else:
+        if args.rotation_w is None or args.p_w is None:
+            print("错误：当不使用 --render_all 时，必须提供 --rotation_w 和 --p_w 参数")
+            sys.exit(1)
+        
+        # 解析 JSON 参数
+        rotation_w = json.loads(args.rotation_w)
+        p_w = json.loads(args.p_w)
+        
+        print("初始化 Renderer...")
+        renderer = Renderer(
+            model_path=args.model_path,
+            data_path=args.data_path
+        )
+        
+        print("渲染单个视图...")
+        renderer.render_set_one_view(rotation_w, p_w, show_level=args.show_level, ape_code=args.ape_code)
+        print("渲染完成！")
