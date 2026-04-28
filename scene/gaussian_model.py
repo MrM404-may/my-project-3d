@@ -1488,6 +1488,11 @@ class GaussianModel:
 
     def save_mlp_checkpoints(self, path, mode = 'split'):#split or unite
         mkdir_p(os.path.dirname(path))
+        # 如果使用 tiny-cuda-nn，强制使用 unite 模式（state_dict 保存）
+        if HAS_TCNN and mode == 'split':
+            print("⚠️  检测到 tiny-cuda-nn 模块，强制使用 unite 模式保存")
+            mode = 'unite'
+        
         if mode == 'split':
             self.eval()
             # 检查是否是多区域MLP
@@ -1525,11 +1530,36 @@ class GaussianModel:
             self.train()
         elif mode == 'unite':
             param_dict = {}
-            param_dict['opacity_mlp'] = [mlp.state_dict() for mlp in self.mlp_opacity]
-            param_dict['cov_mlp'] = [mlp.state_dict() for mlp in self.mlp_cov]
-            param_dict['color_mlp'] = [mlp.state_dict() for mlp in self.mlp_color]
-            if self.appearance_dim > 0:
-                param_dict['appearance'] = [emb.state_dict() for emb in self.embedding_appearance]
+            param_dict['has_tcnn'] = HAS_TCNN  # 标记是否使用 tiny-cuda-nn
+            param_dict['num_regions'] = self.num_regions if hasattr(self, 'num_regions') else 1
+            param_dict['n_offsets'] = self.n_offsets
+            
+            # 保存网络配置（用于重建 tiny-cuda-nn 模块）
+            if HAS_TCNN:
+                param_dict['hash_encoding_config'] = self.hash_encoding_config
+                param_dict['tiny_mlp_config'] = self.tiny_mlp_config
+                param_dict['opacity_dist_dim'] = self.opacity_dist_dim
+                param_dict['cov_dist_dim'] = self.cov_dist_dim
+                param_dict['color_dist_dim'] = self.color_dist_dim
+                param_dict['appearance_dim'] = self.appearance_dim
+                param_dict['level_dim'] = self.level_dim
+                param_dict['view_dim'] = self.view_dim
+                param_dict['feat_dim'] = self.feat_dim
+            
+            # 保存参数
+            if hasattr(self, 'num_regions') and self.num_regions > 1:
+                param_dict['opacity_mlp'] = [mlp.state_dict() for mlp in self.mlp_opacity]
+                param_dict['cov_mlp'] = [mlp.state_dict() for mlp in self.mlp_cov]
+                param_dict['color_mlp'] = [mlp.state_dict() for mlp in self.mlp_color]
+                if self.appearance_dim > 0:
+                    param_dict['appearance'] = [emb.state_dict() for emb in self.embedding_appearance]
+            else:
+                param_dict['opacity_mlp'] = [self.mlp_opacity.state_dict()] if isinstance(self.mlp_opacity, nn.Module) else [self.mlp_opacity.state_dict()]
+                param_dict['cov_mlp'] = [self.mlp_cov.state_dict()]
+                param_dict['color_mlp'] = [self.mlp_color.state_dict()]
+                if self.appearance_dim > 0:
+                    param_dict['appearance'] = [self.embedding_appearance.state_dict()]
+            
             if self.use_feat_bank:
                 param_dict['feature_bank_mlp'] = self.mlp_feature_bank.state_dict()
             torch.save(param_dict, os.path.join(path, 'checkpoints.pth'))
@@ -1571,15 +1601,101 @@ class GaussianModel:
                 self.mlp_feature_bank = torch.jit.load(os.path.join(path, 'feature_bank_mlp.pt')).cuda()
         elif mode == 'unite':
             checkpoint = torch.load(os.path.join(path, 'checkpoints.pth'))
+            
+            # 检查是否保存了 tiny-cuda-nn 配置
+            has_tcnn = checkpoint.get('has_tcnn', False)
+            
+            # 如果保存了 n_offsets，更新它
+            if 'n_offsets' in checkpoint:
+                self.n_offsets = checkpoint['n_offsets']
+                print(f"⚠️  从checkpoint中加载 n_offsets: {self.n_offsets}")
+            
+            # 如果保存了 num_regions，更新它
+            if 'num_regions' in checkpoint:
+                self.num_regions = checkpoint['num_regions']
+                print(f"⚠️  从checkpoint中加载 num_regions: {self.num_regions}")
+            
+            # 如果使用了 tiny-cuda-nn，需要先重建模块
+            if has_tcnn and 'hash_encoding_config' in checkpoint:
+                print("📦  检测到 tiny-cuda-nn 模块，正在重建网络...")
+                
+                # 恢复配置
+                self.hash_encoding_config = checkpoint['hash_encoding_config']
+                self.tiny_mlp_config = checkpoint['tiny_mlp_config']
+                self.opacity_dist_dim = checkpoint['opacity_dist_dim']
+                self.cov_dist_dim = checkpoint['cov_dist_dim']
+                self.color_dist_dim = checkpoint['color_dist_dim']
+                self.appearance_dim = checkpoint['appearance_dim']
+                self.level_dim = checkpoint['level_dim']
+                self.view_dim = checkpoint['view_dim']
+                self.feat_dim = checkpoint['feat_dim']
+                
+                # 重建网络（使用 __init__ 中的代码）
+                from torch.nn import ModuleList
+                self.mlp_opacity = ModuleList()
+                self.mlp_cov = ModuleList()
+                self.mlp_color = ModuleList()
+                
+                for i in range(self.num_regions):
+                    # 计算输入维度
+                    n_input_opacity = 3 + self.view_dim + self.opacity_dist_dim + self.level_dim
+                    n_input_cov = 3 + self.view_dim + self.cov_dist_dim + self.level_dim
+                    n_input_color = 3 + self.view_dim + self.color_dist_dim + self.appearance_dim + self.level_dim
+                    
+                    # 重建 opacity mlp
+                    mlp_opacity = tcnn.NetworkWithInputEncoding(
+                        n_input_dims=n_input_opacity,
+                        n_output_dims=self.n_offsets,
+                        encoding_config=self.hash_encoding_config,
+                        network_config=self.tiny_mlp_config
+                    ).cuda()
+                    mlp_opacity.register_forward_hook(self.forward_opacity_mlp)
+                    self.mlp_opacity.append(mlp_opacity)
+                    
+                    # 重建 cov mlp
+                    mlp_cov = tcnn.NetworkWithInputEncoding(
+                        n_input_dims=n_input_cov,
+                        n_output_dims=7,
+                        encoding_config=self.hash_encoding_config,
+                        network_config=self.tiny_mlp_config
+                    ).cuda()
+                    mlp_cov.register_forward_hook(self.forward_cov_mlp)
+                    self.mlp_cov.append(mlp_cov)
+                    
+                    # 重建 color mlp
+                    mlp_color = tcnn.NetworkWithInputEncoding(
+                        n_input_dims=n_input_color,
+                        n_output_dims=3,
+                        encoding_config=self.hash_encoding_config,
+                        network_config=self.tiny_mlp_config
+                    ).cuda()
+                    mlp_color.register_forward_hook(self.forward_color_mlp)
+                    self.mlp_color.append(mlp_color)
+                
+                # 重建外观编码
+                if self.appearance_dim > 0:
+                    self.embedding_appearance = ModuleList()
+                    for i in range(self.num_regions):
+                        self.embedding_appearance.append(Embedding(self.embedding_size, self.appearance_dim).cuda())
+            
+            # 加载参数
             for i, state_dict in enumerate(checkpoint['opacity_mlp']):
-                self.mlp_opacity[i].load_state_dict(state_dict)
+                if i < len(self.mlp_opacity):
+                    self.mlp_opacity[i].load_state_dict(state_dict)
             for i, state_dict in enumerate(checkpoint['cov_mlp']):
-                self.mlp_cov[i].load_state_dict(state_dict)
+                if i < len(self.mlp_cov):
+                    self.mlp_cov[i].load_state_dict(state_dict)
             for i, state_dict in enumerate(checkpoint['color_mlp']):
-                self.mlp_color[i].load_state_dict(state_dict)
+                if i < len(self.mlp_color):
+                    self.mlp_color[i].load_state_dict(state_dict)
             if self.appearance_dim > 0 and 'appearance' in checkpoint:
                 for i, state_dict in enumerate(checkpoint['appearance']):
-                    self.embedding_appearance[i].load_state_dict(state_dict)
+                    if i < len(self.embedding_appearance):
+                        self.embedding_appearance[i].load_state_dict(state_dict)
+            
+            # 加载 feature bank
+            if self.use_feat_bank and 'feature_bank_mlp' in checkpoint:
+                self.mlp_feature_bank.load_state_dict(checkpoint['feature_bank_mlp'])
     
     def load_mlp_from_pt(self, path):
         """
