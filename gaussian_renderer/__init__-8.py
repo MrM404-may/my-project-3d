@@ -82,12 +82,14 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
             feat[:,::1, :1]*bank_weight[:,:,2:]
         feat = feat.squeeze(dim=-1) # [n, c]
 
+    # 使用锚点位置代替特征（用于哈希表编码）
+    # 输入格式：位置(3) + 视角(3) + 距离(可选) + 层级(可选)
     if pc.add_level:
-        cat_local_view = torch.cat([feat, ob_view, ob_dist, level], dim=1) # [N, c+3+1+1]
-        cat_local_view_wodist = torch.cat([feat, ob_view, level], dim=1) # [N, c+3+1]
+        cat_local_view = torch.cat([anchor, ob_view, ob_dist, level], dim=1) # [N, 3+3+1+1]
+        cat_local_view_wodist = torch.cat([anchor, ob_view, level], dim=1) # [N, 3+3+1]
     else:
-        cat_local_view = torch.cat([feat, ob_view, ob_dist], dim=1) # [N, c+3+1]
-        cat_local_view_wodist = torch.cat([feat, ob_view], dim=1) # [N, c+3]
+        cat_local_view = torch.cat([anchor, ob_view, ob_dist], dim=1) # [N, 3+3+1]
+        cat_local_view_wodist = torch.cat([anchor, ob_view], dim=1) # [N, 3+3]
 
     if pc.appearance_dim > 0:
         if is_training or ape_code < 0:
@@ -122,9 +124,9 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     # get offset's color
     if pc.appearance_dim > 0:
         if pc.add_color_dist:
-            color_input = torch.cat([cat_local_view, appearance], dim=1)
+            color_input = torch.cat([anchor, ob_view, ob_dist, level, appearance], dim=1)
         else:
-            color_input = torch.cat([cat_local_view_wodist, appearance], dim=1)
+            color_input = torch.cat([anchor, ob_view, level, appearance], dim=1)
     else:
         if pc.add_color_dist:
             color_input = cat_local_view

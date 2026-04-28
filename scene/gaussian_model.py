@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+
 import time
 from datetime import timedelta
 import torch
@@ -26,6 +27,15 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 from scene.embedding import Embedding
 from einops import repeat
 import math
+
+# ====================== 新增：引入 tiny-cuda-nn ======================
+try:
+    import tinycudann as tcnn
+    HAS_TCNN = True
+except ImportError:
+    HAS_TCNN = False
+    print("Warning: tiny-cuda-nn not installed, using PyTorch MLP fallback")
+# =====================================================================
 
 # ====================== 新增：引入分区训练依赖 ======================
 from shapely.geometry import Polygon, Point
@@ -124,45 +134,109 @@ class GaussianModel:
         self.color_dist_dim = 1 if self.add_color_dist else 0
         self.level_dim = 1 if self.add_level else 0
     
-        # 初始化区域专家MLP
+        # 初始化区域专家：哈希表 + tiny MLP
         self.mlp_opacity = nn.ModuleList()
         self.mlp_cov = nn.ModuleList()
         self.mlp_color = nn.ModuleList()
         
+        # 哈希表配置（用于位置编码）
+        self.hash_encoding_config = {
+            "otype": "Grid",
+            "type": "Hash",
+            "n_levels": 16,
+            "n_features_per_level": 2,
+            "log2_hashmap_size": 19,
+            "base_resolution": 16,
+            "per_level_scale": 1.3819,
+            "interpolation": "Nearest"  # 3DGS使用Nearest插值
+        }
+        
+        # tiny MLP配置
+        self.tiny_mlp_config = {
+            "otype": "FullyFusedMLP",
+            "activation": "ReLU",
+            "output_activation": "None",
+            "n_neurons": self.feat_dim,
+            "n_hidden_layers": 1
+        }
+        
         for i in range(self.num_regions):
-            # 不透明度MLP
-            mlp_opacity = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim, self.feat_dim),
-                    nn.ReLU(True),
-                    nn.Linear(self.feat_dim, self.n_offsets),
-                    nn.Tanh()
+            # 不透明度：哈希表编码 + tiny MLP
+            if HAS_TCNN:
+                # 输入：位置(3) + 视角(3) + 其他特征
+                n_input = 3 + self.view_dim + self.opacity_dist_dim + self.level_dim
+                mlp_opacity = tcnn.NetworkWithInputEncoding(
+                    n_input_dims=n_input,
+                    n_output_dims=self.n_offsets,
+                    encoding_config=self.hash_encoding_config,
+                    network_config=self.tiny_mlp_config
                 ).cuda()
+            else:
+                mlp_opacity = nn.Sequential(
+                        nn.Linear(self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim, self.feat_dim),
+                        nn.ReLU(True),
+                        nn.Linear(self.feat_dim, self.n_offsets),
+                        nn.Tanh()
+                    ).cuda()
             self.mlp_opacity.append(mlp_opacity)
             
-            # 协方差MLP
-            mlp_cov = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim, self.feat_dim),
-                    nn.ReLU(True),
-                    nn.Linear(self.feat_dim, 7*self.n_offsets),
+            # 协方差：哈希表编码 + tiny MLP
+            if HAS_TCNN:
+                n_input = 3 + self.view_dim + self.cov_dist_dim + self.level_dim
+                mlp_cov = tcnn.NetworkWithInputEncoding(
+                    n_input_dims=n_input,
+                    n_output_dims=7*self.n_offsets,
+                    encoding_config=self.hash_encoding_config,
+                    network_config=self.tiny_mlp_config
                 ).cuda()
+            else:
+                mlp_cov = nn.Sequential(
+                        nn.Linear(self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim, self.feat_dim),
+                        nn.ReLU(True),
+                        nn.Linear(self.feat_dim, 7*self.n_offsets),
+                    ).cuda()
             self.mlp_cov.append(mlp_cov)
             
-            # 颜色MLP
-            mlp_color = nn.Sequential(
-                    nn.Linear(self.feat_dim+self.view_dim+self.color_dist_dim+self.level_dim+self.appearance_dim, self.feat_dim),
-                    nn.ReLU(True),
-                    nn.Linear(self.feat_dim, 3*self.n_offsets),
-                    nn.Sigmoid()
+            # 颜色：哈希表编码 + tiny MLP
+            if HAS_TCNN:
+                n_input = 3 + self.view_dim + self.color_dist_dim + self.level_dim + self.appearance_dim
+                color_mlp_config = self.tiny_mlp_config.copy()
+                color_mlp_config["output_activation"] = "Sigmoid"
+                mlp_color = tcnn.NetworkWithInputEncoding(
+                    n_input_dims=n_input,
+                    n_output_dims=3*self.n_offsets,
+                    encoding_config=self.hash_encoding_config,
+                    network_config=color_mlp_config
                 ).cuda()
+            else:
+                mlp_color = nn.Sequential(
+                        nn.Linear(self.feat_dim+self.view_dim+self.color_dist_dim+self.level_dim+self.appearance_dim, self.feat_dim),
+                        nn.ReLU(True),
+                        nn.Linear(self.feat_dim, 3*self.n_offsets),
+                        nn.Sigmoid()
+                    ).cuda()
             self.mlp_color.append(mlp_color)
         
         if self.use_feat_bank:
-            self.mlp_feature_bank = nn.Sequential(
-                    nn.Linear(self.view_dim+self.level_dim, self.feat_dim),
-                    nn.ReLU(True),
-                    nn.Linear(self.feat_dim, 3),
-                    nn.Softmax(dim=1)
+            if HAS_TCNN:
+                self.mlp_feature_bank = tcnn.Network(
+                    n_input_dims=self.view_dim+self.level_dim,
+                    n_output_dims=3,
+                    network_config={
+                        "otype": "FullyFusedMLP",
+                        "activation": "ReLU",
+                        "output_activation": "Softmax",
+                        "n_neurons": self.feat_dim,
+                        "n_hidden_layers": 1
+                    }
                 ).cuda()
+            else:
+                self.mlp_feature_bank = nn.Sequential(
+                        nn.Linear(self.view_dim+self.level_dim, self.feat_dim),
+                        nn.ReLU(True),
+                        nn.Linear(self.feat_dim, 3),
+                        nn.Softmax(dim=1)
+                    ).cuda()
 
         # ====================== 新增：分区训练相关成员变量 ======================
         self._stored_anchors = {}  # 存储区域外的锚点数据 {region_key: {data_dict}}
@@ -275,6 +349,43 @@ class GaussianModel:
     @property
     def get_featurebank_mlp(self):
         return self.mlp_feature_bank
+    
+    def forward_opacity_mlp(self, x, region):
+        """根据region选择对应的不透明度专家网络进行前向传播"""
+        if self.num_regions == 1:
+            return self.mlp_opacity[0](x)
+        else:
+            # 根据region选择专家
+            result = torch.zeros(x.shape[0], self.n_offsets, device=x.device)
+            for r in range(self.num_regions):
+                mask = (region == r)
+                if mask.any():
+                    result[mask] = self.mlp_opacity[r](x[mask])
+            return result
+    
+    def forward_cov_mlp(self, x, region):
+        """根据region选择对应的协方差专家网络进行前向传播"""
+        if self.num_regions == 1:
+            return self.mlp_cov[0](x)
+        else:
+            result = torch.zeros(x.shape[0], 7 * self.n_offsets, device=x.device)
+            for r in range(self.num_regions):
+                mask = (region == r)
+                if mask.any():
+                    result[mask] = self.mlp_cov[r](x[mask])
+            return result
+    
+    def forward_color_mlp(self, x, region):
+        """根据region选择对应的颜色专家网络进行前向传播"""
+        if self.num_regions == 1:
+            return self.mlp_color[0](x)
+        else:
+            result = torch.zeros(x.shape[0], 3 * self.n_offsets, device=x.device)
+            for r in range(self.num_regions):
+                mask = (region == r)
+                if mask.any():
+                    result[mask] = self.mlp_color[r](x[mask])
+            return result
     
     def set_appearance(self, num_cameras):
         if self.appearance_dim > 0:
