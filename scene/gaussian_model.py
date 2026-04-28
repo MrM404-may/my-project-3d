@@ -338,6 +338,8 @@ class GaussianModel:
             mlp_feature_bank_state,
             embedding_appearance_state) = model_args
         
+        self.training_setup(training_args)
+        
         if mlp_opacity_state is not None and mlp_cov_state is not None and mlp_color_state is not None:
             for i, (opacity_state, cov_state, color_state) in enumerate(zip(mlp_opacity_state, mlp_cov_state, mlp_color_state)):
                 self.mlp_opacity[i].load_state_dict(opacity_state)
@@ -352,7 +354,6 @@ class GaussianModel:
                 if emb_state is not None:
                     self.embedding_appearance[i].load_state_dict(emb_state)
         
-        self.training_setup(training_args)
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
 
