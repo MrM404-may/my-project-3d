@@ -89,9 +89,22 @@ class Scene:
         if self.loaded_iter:
             # 优先使用merged_anchors.ply文件
             merged_ply_path = os.path.join(self.model_path, "merged_anchors.ply")
+            merged_mlp_path = os.path.join(self.model_path, "point_cloud", "iteration_merged")
+            
             if os.path.exists(merged_ply_path):
                 print(f"Loading merged anchors from: {merged_ply_path}")
                 self.gaussians.load_ply_sparse_gaussian(merged_ply_path)
+                
+                # 如果存在合并后的MLP，使用它
+                if os.path.exists(merged_mlp_path):
+                    print(f"Loading merged MLP from: {merged_mlp_path}")
+                    self.gaussians.load_mlp_checkpoints(merged_mlp_path)
+                else:
+                    print("Warning: merged_anchors.ply exists but merged MLP not found!")
+                    print(f"Using regular MLP checkpoints from iteration_{self.loaded_iter}")
+                    self.gaussians.load_mlp_checkpoints(os.path.join(self.model_path,
+                                                                   "point_cloud",
+                                                                   "iteration_" + str(self.loaded_iter)))
             else:
                 print("Using regular point cloud ply file")
                 self.gaussians.load_ply_sparse_gaussian(os.path.join(self.model_path,
@@ -99,11 +112,11 @@ class Scene:
                                                                "iteration_" + str(self.loaded_iter),
                                                                "point_cloud.ply"))
             
-            # 直接使用原始保存路径下的多个PT文件
-            print("Using regular MLP checkpoints")
-            self.gaussians.load_mlp_checkpoints(os.path.join(self.model_path,
-                                                           "point_cloud",
-                                                           "iteration_" + str(self.loaded_iter)))
+                # 直接使用原始保存路径下的MLP
+                print(f"Using MLP checkpoints from iteration_{self.loaded_iter}")
+                self.gaussians.load_mlp_checkpoints(os.path.join(self.model_path,
+                                                               "point_cloud",
+                                                               "iteration_" + str(self.loaded_iter)))
             print("Load Voxel Size: ", self.gaussians.voxel_size)
             print("Load Standard Dist: ", self.gaussians.standard_dist)
         else:
