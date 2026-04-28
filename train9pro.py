@@ -286,7 +286,7 @@ def merge_region_anchors(model_path):
     
     print(f"✅ 点云文件保存完成: {output_ply}")
     
-    # 4. 保存MLP为PT文件
+    # 4. 保存MLP为PT文件（使用新的合并后路径）
     print("💾 保存MLP为PT文件...")
     # 加载训练好的GaussianModel
     from scene.gaussian_model import GaussianModel
@@ -294,8 +294,6 @@ def merge_region_anchors(model_path):
     import torch
     
     # 创建一个临时的GaussianModel实例
-    # 这里需要根据实际的参数来创建
-    # 假设我们使用默认参数
     class DummyArgs:
         def __init__(self):
             self.feat_dim = 32
@@ -322,15 +320,13 @@ def merge_region_anchors(model_path):
     )
     
     # 加载训练好的MLP参数
-    # 假设我们从最后一个迭代的检查点加载
-    import os
     point_cloud_dir = os.path.join(model_path, "point_cloud")
     if os.path.exists(point_cloud_dir):
         # 查找最大的迭代次数
         import re
         iterations = []
         for fname in os.listdir(point_cloud_dir):
-            match = re.match(r"iteration_(+)", fname)
+            match = re.match(r"iteration_(\d+)", fname)
             if match:
                 iterations.append(int(match.group(1)))
         if iterations:
@@ -339,27 +335,15 @@ def merge_region_anchors(model_path):
             print(f"Loading MLP from: {mlp_checkpoint_path}")
             gaussians.load_mlp_checkpoints(mlp_checkpoint_path)
     
-    # 保存MLP为PT文件
-    mlp_pt_path = os.path.join(model_path, "mlp_checkpoints.pt")
-    print(f"Saving MLP to: {mlp_pt_path}")
+    # 保存MLP为PT文件（使用新的统一格式）
+    merged_point_cloud_path = os.path.join(model_path, "point_cloud", "iteration_merged")
+    os.makedirs(merged_point_cloud_path, exist_ok=True)
+    print(f"Saving merged MLP to: {merged_point_cloud_path}")
     
-    # 保存MLP参数
-    mlp_state_dict = {
-        "mlp_opacity": [mlp.state_dict() for mlp in gaussians.mlp_opacity],
-        "mlp_cov": [mlp.state_dict() for mlp in gaussians.mlp_cov],
-        "mlp_color": [mlp.state_dict() for mlp in gaussians.mlp_color]
-    }
+    # 使用我们修改后的save_mlp_checkpoints方法保存
+    gaussians.save_mlp_checkpoints(merged_point_cloud_path)
     
-    # 如果使用了特征银行，也保存相关参数
-    if hasattr(gaussians, 'mlp_feature_bank') and gaussians.use_feat_bank:
-        mlp_state_dict["mlp_feature_bank"] = gaussians.mlp_feature_bank.state_dict()
-    
-    # 如果使用了外观编码，也保存相关参数
-    if hasattr(gaussians, 'embedding_appearance') and gaussians.appearance_dim > 0:
-        mlp_state_dict["embedding_appearance"] = gaussians.embedding_appearance.state_dict()
-    
-    torch.save(mlp_state_dict, mlp_pt_path)
-    print(f"✅ MLP PT文件保存完成: {mlp_pt_path}")
+    print(f"✅ MLP文件保存完成: {os.path.join(merged_point_cloud_path, 'checkpoints.pth')}")
     
     # 提示用户如何使用这些文件进行渲染
     print("\n📋 使用说明:")
