@@ -269,6 +269,20 @@ class GaussianModel:
             self.embedding_appearance.train()
 
     def capture(self):
+        mlp_opacity_state = [mlp.state_dict() for mlp in self.mlp_opacity]
+        mlp_cov_state = [mlp.state_dict() for mlp in self.mlp_cov]
+        mlp_color_state = [mlp.state_dict() for mlp in self.mlp_color]
+        
+        if self.use_feat_bank:
+            mlp_feature_bank_state = self.mlp_feature_bank.state_dict()
+        else:
+            mlp_feature_bank_state = None
+        
+        if self.appearance_dim > 0:
+            embedding_appearance_state = [emb.state_dict() if emb else None for emb in self.embedding_appearance]
+        else:
+            embedding_appearance_state = None
+        
         return (
             self._anchor,
             self._level,
@@ -280,22 +294,64 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            mlp_opacity_state,
+            mlp_cov_state,
+            mlp_color_state,
+            mlp_feature_bank_state,
+            embedding_appearance_state,
         )
     
     def restore(self, model_args, training_args):
-        # 注意：如果是从 Checkpoint 恢复，可能需要同时恢复 _stored_anchors，
-        # 但为了简单，这里假设恢复时是从头开始或不需要恢复旧区域数据。
-        (self.active_sh_degree, 
-        self._anchor, 
-        self._level,
-        self._offset,
-        self._local,
-        self._scaling, 
-        self._rotation, 
-        self._opacity,
-        denom,
-        opt_dict, 
-        self.spatial_lr_scale) = model_args
+        if len(model_args) == 11:
+            (self.active_sh_degree, 
+            self._anchor, 
+            self._level,
+            self._offset,
+            self._local,
+            self._scaling, 
+            self._rotation, 
+            self._opacity,
+            denom,
+            opt_dict, 
+            self.spatial_lr_scale) = model_args
+            
+            mlp_opacity_state = None
+            mlp_cov_state = None
+            mlp_color_state = None
+            mlp_feature_bank_state = None
+            embedding_appearance_state = None
+        else:
+            (self.active_sh_degree, 
+            self._anchor, 
+            self._level,
+            self._offset,
+            self._local,
+            self._scaling, 
+            self._rotation, 
+            self._opacity,
+            denom,
+            opt_dict, 
+            self.spatial_lr_scale,
+            mlp_opacity_state,
+            mlp_cov_state,
+            mlp_color_state,
+            mlp_feature_bank_state,
+            embedding_appearance_state) = model_args
+        
+        if mlp_opacity_state is not None and mlp_cov_state is not None and mlp_color_state is not None:
+            for i, (opacity_state, cov_state, color_state) in enumerate(zip(mlp_opacity_state, mlp_cov_state, mlp_color_state)):
+                self.mlp_opacity[i].load_state_dict(opacity_state)
+                self.mlp_cov[i].load_state_dict(cov_state)
+                self.mlp_color[i].load_state_dict(color_state)
+        
+        if self.use_feat_bank and mlp_feature_bank_state is not None:
+            self.mlp_feature_bank.load_state_dict(mlp_feature_bank_state)
+        
+        if self.appearance_dim > 0 and embedding_appearance_state is not None:
+            for i, emb_state in enumerate(embedding_appearance_state):
+                if emb_state is not None:
+                    self.embedding_appearance[i].load_state_dict(emb_state)
+        
         self.training_setup(training_args)
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
