@@ -1543,180 +1543,98 @@ class GaussianModel:
         if prune_mask.shape[0]>0 and prune_mask.shape[0] == self.get_anchor.shape[0]:
             self.prune_anchor(prune_mask)
 
-    def save_mlp_checkpoints(self, path, mode = 'unite'):#split or unite
+    def save_mlp_checkpoints(self, path):
         mkdir_p(os.path.dirname(path))
-        if mode == 'split':
-            if HAS_TCNN:
-                raise NotImplementedError("split mode not supported for tiny-cuda-nn. Use 'unite' mode instead.")
-            
-            self.eval()
-            # 检查是否是多区域MLP
-            if hasattr(self, 'num_regions') and self.num_regions > 1:
-                # 为每个区域的MLP单独保存
-                for i in range(self.num_regions):
-                    # 保存opacity MLP
-                    opacity_mlp = torch.jit.trace(self.mlp_opacity[i], (torch.rand(1, self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim).cuda()))
-                    opacity_mlp.save(os.path.join(path, f'opacity_mlp_{i}.pt'))
-                    # 保存cov MLP
-                    cov_mlp = torch.jit.trace(self.mlp_cov[i], (torch.rand(1, self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim).cuda()))
-                    cov_mlp.save(os.path.join(path, f'cov_mlp_{i}.pt'))
-                    # 保存color MLP
-                    color_mlp = torch.jit.trace(self.mlp_color[i], (torch.rand(1, self.feat_dim+self.view_dim+self.color_dist_dim+self.appearance_dim+self.level_dim).cuda()))
-                    color_mlp.save(os.path.join(path, f'color_mlp_{i}.pt'))
-                    # 保存外观编码
-                    if self.appearance_dim > 0 and self.embedding_appearance[i] is not None:
-                        emd = torch.jit.trace(self.embedding_appearance[i], (torch.zeros((1,), dtype=torch.long).cuda()))
-                        emd.save(os.path.join(path, f'embedding_appearance_{i}.pt'))
-            else:
-                # 单区域情况
-                opacity_mlp = torch.jit.trace(self.mlp_opacity, (torch.rand(1, self.feat_dim+self.view_dim+self.opacity_dist_dim+self.level_dim).cuda()))
-                opacity_mlp.save(os.path.join(path, 'opacity_mlp.pt'))
-                cov_mlp = torch.jit.trace(self.mlp_cov, (torch.rand(1, self.feat_dim+self.view_dim+self.cov_dist_dim+self.level_dim).cuda()))
-                cov_mlp.save(os.path.join(path, 'cov_mlp.pt'))
-                color_mlp = torch.jit.trace(self.mlp_color, (torch.rand(1, self.feat_dim+self.view_dim+self.color_dist_dim+self.appearance_dim+self.level_dim).cuda()))
-                color_mlp.save(os.path.join(path, 'color_mlp.pt'))
-                if self.appearance_dim > 0:
-                    emd = torch.jit.trace(self.embedding_appearance, (torch.zeros((1,), dtype=torch.long).cuda()))
-                    emd.save(os.path.join(path, 'embedding_appearance.pt'))
-            # 保存其他不变的MLP
-            if self.use_feat_bank:
-                feature_bank_mlp = torch.jit.trace(self.mlp_feature_bank, (torch.rand(1, 3+self.level_dim).cuda()))
-                feature_bank_mlp.save(os.path.join(path, 'feature_bank_mlp.pt'))
-            self.train()
-        elif mode == 'unite':
-            param_dict = {}
-            param_dict['opacity_mlp'] = [mlp.state_dict() for mlp in self.mlp_opacity]
-            param_dict['cov_mlp'] = [mlp.state_dict() for mlp in self.mlp_cov]
-            param_dict['color_mlp'] = [mlp.state_dict() for mlp in self.mlp_color]
-            param_dict['has_tcnn'] = HAS_TCNN
-            param_dict['hash_encoding_config'] = self.hash_encoding_config if hasattr(self, 'hash_encoding_config') else None
-            param_dict['tiny_mlp_config'] = self.tiny_mlp_config if hasattr(self, 'tiny_mlp_config') else None
-            param_dict['feat_dim'] = self.feat_dim
-            param_dict['n_offsets'] = self.n_offsets
-            param_dict['view_dim'] = self.view_dim
-            param_dict['opacity_dist_dim'] = self.opacity_dist_dim
-            param_dict['cov_dist_dim'] = self.cov_dist_dim
-            param_dict['color_dist_dim'] = self.color_dist_dim
-            param_dict['level_dim'] = self.level_dim
-            param_dict['appearance_dim'] = self.appearance_dim
-            if self.appearance_dim > 0:
-                param_dict['appearance'] = [emb.state_dict() for emb in self.embedding_appearance]
-            if self.use_feat_bank:
-                param_dict['feature_bank_mlp'] = self.mlp_feature_bank.state_dict()
-            torch.save(param_dict, os.path.join(path, 'checkpoints.pth'))
-        else:
-            raise NotImplementedError
+        
+        param_dict = {}
+        param_dict['opacity_mlp'] = [mlp.state_dict() for mlp in self.mlp_opacity]
+        param_dict['cov_mlp'] = [mlp.state_dict() for mlp in self.mlp_cov]
+        param_dict['color_mlp'] = [mlp.state_dict() for mlp in self.mlp_color]
+        param_dict['has_tcnn'] = HAS_TCNN
+        param_dict['hash_encoding_config'] = self.hash_encoding_config
+        param_dict['tiny_mlp_config'] = self.tiny_mlp_config
+        param_dict['feat_dim'] = self.feat_dim
+        param_dict['n_offsets'] = self.n_offsets
+        param_dict['view_dim'] = self.view_dim
+        param_dict['opacity_dist_dim'] = self.opacity_dist_dim
+        param_dict['cov_dist_dim'] = self.cov_dist_dim
+        param_dict['color_dist_dim'] = self.color_dist_dim
+        param_dict['level_dim'] = self.level_dim
+        param_dict['appearance_dim'] = self.appearance_dim
+        param_dict['num_regions'] = self.num_regions
+        
+        if self.appearance_dim > 0:
+            param_dict['appearance'] = [emb.state_dict() for emb in self.embedding_appearance]
+        if self.use_feat_bank:
+            param_dict['feature_bank_mlp'] = self.mlp_feature_bank.state_dict()
+        
+        torch.save(param_dict, os.path.join(path, 'checkpoints.pth'))
 
 
-    def load_mlp_checkpoints(self, path, mode = 'unite'):#split or unite
-        if mode == 'split':
-            if HAS_TCNN:
-                raise NotImplementedError("split mode not supported for tiny-cuda-nn. Use 'unite' mode instead.")
+    def load_mlp_checkpoints(self, path):
+        from torch.nn import ModuleList
+        
+        checkpoint = torch.load(os.path.join(path, 'checkpoints.pth'), map_location='cuda')
+        
+        hash_config = checkpoint['hash_encoding_config']
+        mlp_config = checkpoint['tiny_mlp_config']
+        num_regions = checkpoint['num_regions']
+        
+        self.mlp_opacity = ModuleList()
+        self.mlp_cov = ModuleList()
+        self.mlp_color = ModuleList()
+        
+        for i in range(num_regions):
+            n_input = 3 + self.view_dim + self.opacity_dist_dim + self.level_dim
+            mlp_opacity = tcnn.NetworkWithInputEncoding(
+                n_input_dims=n_input,
+                n_output_dims=self.n_offsets,
+                encoding_config=hash_config,
+                network_config=mlp_config
+            ).cuda()
+            mlp_opacity.load_state_dict(checkpoint['opacity_mlp'][i])
+            self.mlp_opacity.append(mlp_opacity)
             
-            # 检查是否是多区域MLP
-            if hasattr(self, 'num_regions') and self.num_regions > 1:
-                # 为每个区域加载MLP
-                from torch.nn import ModuleList
-                self.mlp_opacity = ModuleList()
-                self.mlp_cov = ModuleList()
-                self.mlp_color = ModuleList()
-                self.embedding_appearance = ModuleList()
-                for i in range(self.num_regions):
-                    # 加载opacity MLP
-                    self.mlp_opacity.append(torch.jit.load(os.path.join(path, f'opacity_mlp_{i}.pt')).cuda())
-                    # 加载cov MLP
-                    self.mlp_cov.append(torch.jit.load(os.path.join(path, f'cov_mlp_{i}.pt')).cuda())
-                    # 加载color MLP
-                    self.mlp_color.append(torch.jit.load(os.path.join(path, f'color_mlp_{i}.pt')).cuda())
-                    # 加载外观编码
-                    if self.appearance_dim > 0:
-                        self.embedding_appearance.append(torch.jit.load(os.path.join(path, f'embedding_appearance_{i}.pt')).cuda())
-                    else:
-                        self.embedding_appearance.append(None)
-            else:
-                # 单区域情况
-                self.mlp_opacity = torch.jit.load(os.path.join(path, 'opacity_mlp.pt')).cuda()
-                self.mlp_cov = torch.jit.load(os.path.join(path, 'cov_mlp.pt')).cuda()
-                self.mlp_color = torch.jit.load(os.path.join(path, 'color_mlp.pt')).cuda()
-                if self.appearance_dim > 0:
-                    self.embedding_appearance = torch.jit.load(os.path.join(path, 'embedding_appearance.pt')).cuda()
-            # 加载其他不变的MLP
-            if self.use_feat_bank:
-                self.mlp_feature_bank = torch.jit.load(os.path.join(path, 'feature_bank_mlp.pt')).cuda()
-        elif mode == 'unite':
-            checkpoint = torch.load(os.path.join(path, 'checkpoints.pth'), map_location='cuda')
+            n_input = 3 + self.view_dim + self.cov_dist_dim + self.level_dim
+            mlp_cov = tcnn.NetworkWithInputEncoding(
+                n_input_dims=n_input,
+                n_output_dims=7*self.n_offsets,
+                encoding_config=hash_config,
+                network_config=mlp_config
+            ).cuda()
+            mlp_cov.load_state_dict(checkpoint['cov_mlp'][i])
+            self.mlp_cov.append(mlp_cov)
             
-            has_tcnn = checkpoint.get('has_tcnn', False)
-            num_regions = len(checkpoint['opacity_mlp'])
-            
-            if has_tcnn and HAS_TCNN:
-                hash_config = checkpoint.get('hash_encoding_config', self.hash_encoding_config)
-                mlp_config = checkpoint.get('tiny_mlp_config', self.tiny_mlp_config)
-                
-                from torch.nn import ModuleList
-                self.mlp_opacity = ModuleList()
-                self.mlp_cov = ModuleList()
-                self.mlp_color = ModuleList()
-                
-                for i in range(num_regions):
-                    n_input = 3 + self.view_dim + self.opacity_dist_dim + self.level_dim
-                    mlp_opacity = tcnn.NetworkWithInputEncoding(
-                        n_input_dims=n_input,
-                        n_output_dims=self.n_offsets,
-                        encoding_config=hash_config,
-                        network_config=mlp_config
-                    ).cuda()
-                    mlp_opacity.load_state_dict(checkpoint['opacity_mlp'][i])
-                    self.mlp_opacity.append(mlp_opacity)
-                    
-                    n_input = 3 + self.view_dim + self.cov_dist_dim + self.level_dim
-                    mlp_cov = tcnn.NetworkWithInputEncoding(
-                        n_input_dims=n_input,
-                        n_output_dims=7*self.n_offsets,
-                        encoding_config=hash_config,
-                        network_config=mlp_config
-                    ).cuda()
-                    mlp_cov.load_state_dict(checkpoint['cov_mlp'][i])
-                    self.mlp_cov.append(mlp_cov)
-                    
-                    n_input = 3 + self.view_dim + self.color_dist_dim + self.level_dim + self.appearance_dim
-                    color_mlp_config = mlp_config.copy()
-                    color_mlp_config["output_activation"] = "Sigmoid"
-                    mlp_color = tcnn.NetworkWithInputEncoding(
-                        n_input_dims=n_input,
-                        n_output_dims=3*self.n_offsets,
-                        encoding_config=hash_config,
-                        network_config=color_mlp_config
-                    ).cuda()
-                    mlp_color.load_state_dict(checkpoint['color_mlp'][i])
-                    self.mlp_color.append(mlp_color)
-            else:
-                for i, state_dict in enumerate(checkpoint['opacity_mlp']):
-                    self.mlp_opacity[i].load_state_dict(state_dict)
-                for i, state_dict in enumerate(checkpoint['cov_mlp']):
-                    self.mlp_cov[i].load_state_dict(state_dict)
-                for i, state_dict in enumerate(checkpoint['color_mlp']):
-                    self.mlp_color[i].load_state_dict(state_dict)
-            
-            if self.appearance_dim > 0 and 'appearance' in checkpoint:
-                for i, state_dict in enumerate(checkpoint['appearance']):
-                    if self.embedding_appearance[i] is not None:
-                        self.embedding_appearance[i].load_state_dict(state_dict)
-            
-            if self.use_feat_bank and 'feature_bank_mlp' in checkpoint:
-                if has_tcnn and HAS_TCNN:
-                    self.mlp_feature_bank = tcnn.Network(
-                        n_input_dims=self.view_dim+self.level_dim,
-                        n_output_dims=3,
-                        network_config={
-                            "otype": "FullyFusedMLP",
-                            "activation": "ReLU",
-                            "output_activation": "Softmax",
-                            "n_neurons": self.feat_dim,
-                            "n_hidden_layers": 1
-                        }
-                    ).cuda()
-                self.mlp_feature_bank.load_state_dict(checkpoint['feature_bank_mlp'])
+            n_input = 3 + self.view_dim + self.color_dist_dim + self.level_dim + self.appearance_dim
+            color_mlp_config = mlp_config.copy()
+            color_mlp_config["output_activation"] = "Sigmoid"
+            mlp_color = tcnn.NetworkWithInputEncoding(
+                n_input_dims=n_input,
+                n_output_dims=3*self.n_offsets,
+                encoding_config=hash_config,
+                network_config=color_mlp_config
+            ).cuda()
+            mlp_color.load_state_dict(checkpoint['color_mlp'][i])
+            self.mlp_color.append(mlp_color)
+        
+        if self.appearance_dim > 0 and 'appearance' in checkpoint:
+            for i, state_dict in enumerate(checkpoint['appearance']):
+                if self.embedding_appearance[i] is not None:
+                    self.embedding_appearance[i].load_state_dict(state_dict)
+        
+        if self.use_feat_bank and 'feature_bank_mlp' in checkpoint:
+            self.mlp_feature_bank = tcnn.Network(
+                n_input_dims=self.view_dim+self.level_dim,
+                n_output_dims=3,
+                network_config={
+                    "otype": "FullyFusedMLP",
+                    "activation": "ReLU",
+                    "output_activation": "Softmax",
+                    "n_neurons": self.feat_dim,
+                    "n_hidden_layers": 1
+                }
+            ).cuda()
+            self.mlp_feature_bank.load_state_dict(checkpoint['feature_bank_mlp'])
     
     def load_mlp_from_pt(self, path):
         """
