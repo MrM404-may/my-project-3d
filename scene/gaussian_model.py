@@ -150,6 +150,29 @@ class GaussianModel:
             "per_level_scale": 1.3819,
             "interpolation": "Nearest"  # 3DGS使用Nearest插值
         }
+
+        # Composite Encoding: 只对位置(3)进行哈希编码，其余维度直接通过
+        self.composite_encoding_config = {
+            "otype": "Composite",
+            "nested": [
+                {
+                    "otype": "Grid",
+                    "type": "Hash",
+                    "n_levels": 16,
+                    "n_features_per_level": 2,
+                    "log2_hashmap_size": 19,
+                    "base_resolution": 16,
+                    "per_level_scale": 1.3819,
+                    "interpolation": "Nearest",
+                    "n_dims_to_encode": 3,  # 只编码位置(3)
+                    "dims_to_encode_begin": 0  # 从第0个维度开始
+                },
+                {
+                    "otype": "Identity"
+                }
+            ],
+            "reduction": "Concatenation"
+        }
         
         # tiny MLP配置
         self.tiny_mlp_config = {
@@ -168,7 +191,7 @@ class GaussianModel:
                 mlp_opacity = tcnn.NetworkWithInputEncoding(
                     n_input_dims=n_input,
                     n_output_dims=self.n_offsets,
-                    encoding_config=self.hash_encoding_config,
+                    encoding_config=self.composite_encoding_config,
                     network_config=self.tiny_mlp_config
                 ).cuda()
             else:
@@ -186,7 +209,7 @@ class GaussianModel:
                 mlp_cov = tcnn.NetworkWithInputEncoding(
                     n_input_dims=n_input,
                     n_output_dims=7*self.n_offsets,
-                    encoding_config=self.hash_encoding_config,
+                    encoding_config=self.composite_encoding_config,
                     network_config=self.tiny_mlp_config
                 ).cuda()
             else:
@@ -205,7 +228,7 @@ class GaussianModel:
                 mlp_color = tcnn.NetworkWithInputEncoding(
                     n_input_dims=n_input,
                     n_output_dims=3*self.n_offsets,
-                    encoding_config=self.hash_encoding_config,
+                    encoding_config=self.composite_encoding_config,
                     network_config=color_mlp_config
                 ).cuda()
             else:
@@ -1552,6 +1575,7 @@ class GaussianModel:
         param_dict['color_mlp'] = [mlp.state_dict() for mlp in self.mlp_color]
         param_dict['has_tcnn'] = HAS_TCNN
         param_dict['hash_encoding_config'] = self.hash_encoding_config
+        param_dict['composite_encoding_config'] = self.composite_encoding_config
         param_dict['tiny_mlp_config'] = self.tiny_mlp_config
         param_dict['feat_dim'] = self.feat_dim
         param_dict['n_offsets'] = self.n_offsets
@@ -1576,7 +1600,11 @@ class GaussianModel:
         
         checkpoint = torch.load(os.path.join(path, 'checkpoints.pth'), map_location='cuda')
         
-        hash_config = checkpoint['hash_encoding_config']
+        # 优先使用 composite_encoding_config，如果不存在则回退到 hash_encoding_config
+        if 'composite_encoding_config' in checkpoint:
+            encoding_config = checkpoint['composite_encoding_config']
+        else:
+            encoding_config = checkpoint['hash_encoding_config']
         mlp_config = checkpoint['tiny_mlp_config']
         num_regions = checkpoint['num_regions']
         
@@ -1589,7 +1617,7 @@ class GaussianModel:
             mlp_opacity = tcnn.NetworkWithInputEncoding(
                 n_input_dims=n_input,
                 n_output_dims=self.n_offsets,
-                encoding_config=hash_config,
+                encoding_config=encoding_config,
                 network_config=mlp_config
             ).cuda()
             mlp_opacity.load_state_dict(checkpoint['opacity_mlp'][i])
@@ -1599,7 +1627,7 @@ class GaussianModel:
             mlp_cov = tcnn.NetworkWithInputEncoding(
                 n_input_dims=n_input,
                 n_output_dims=7*self.n_offsets,
-                encoding_config=hash_config,
+                encoding_config=encoding_config,
                 network_config=mlp_config
             ).cuda()
             mlp_cov.load_state_dict(checkpoint['cov_mlp'][i])
@@ -1611,7 +1639,7 @@ class GaussianModel:
             mlp_color = tcnn.NetworkWithInputEncoding(
                 n_input_dims=n_input,
                 n_output_dims=3*self.n_offsets,
-                encoding_config=hash_config,
+                encoding_config=encoding_config,
                 network_config=color_mlp_config
             ).cuda()
             mlp_color.load_state_dict(checkpoint['color_mlp'][i])
@@ -1656,7 +1684,11 @@ class GaussianModel:
         self.mlp_color = ModuleList()
         
         if has_tcnn and HAS_TCNN:
-            hash_config = mlp_state_dict.get('hash_encoding_config', self.hash_encoding_config)
+            # 优先使用 composite_encoding_config，如果不存在则回退到 hash_encoding_config
+            if 'composite_encoding_config' in mlp_state_dict:
+                encoding_config = mlp_state_dict['composite_encoding_config']
+            else:
+                encoding_config = mlp_state_dict.get('hash_encoding_config', self.hash_encoding_config)
             mlp_config = mlp_state_dict.get('tiny_mlp_config', self.tiny_mlp_config)
             
             if num_regions > 1:
@@ -1665,7 +1697,7 @@ class GaussianModel:
                     mlp_opacity = tcnn.NetworkWithInputEncoding(
                         n_input_dims=n_input,
                         n_output_dims=self.n_offsets,
-                        encoding_config=hash_config,
+                        encoding_config=encoding_config,
                         network_config=mlp_config
                     ).cuda()
                     mlp_opacity.load_state_dict(mlp_state_dict['mlp_opacity'][i])
@@ -1675,7 +1707,7 @@ class GaussianModel:
                     mlp_cov = tcnn.NetworkWithInputEncoding(
                         n_input_dims=n_input,
                         n_output_dims=7*self.n_offsets,
-                        encoding_config=hash_config,
+                        encoding_config=encoding_config,
                         network_config=mlp_config
                     ).cuda()
                     mlp_cov.load_state_dict(mlp_state_dict['mlp_cov'][i])
@@ -1687,7 +1719,7 @@ class GaussianModel:
                     mlp_color = tcnn.NetworkWithInputEncoding(
                         n_input_dims=n_input,
                         n_output_dims=3*self.n_offsets,
-                        encoding_config=hash_config,
+                        encoding_config=encoding_config,
                         network_config=color_mlp_config
                     ).cuda()
                     mlp_color.load_state_dict(mlp_state_dict['mlp_color'][i])
@@ -1697,7 +1729,7 @@ class GaussianModel:
                 self.mlp_opacity = tcnn.NetworkWithInputEncoding(
                     n_input_dims=n_input,
                     n_output_dims=self.n_offsets,
-                    encoding_config=hash_config,
+                    encoding_config=encoding_config,
                     network_config=mlp_config
                 ).cuda()
                 self.mlp_opacity.load_state_dict(mlp_state_dict['mlp_opacity'])
@@ -1706,7 +1738,7 @@ class GaussianModel:
                 self.mlp_cov = tcnn.NetworkWithInputEncoding(
                     n_input_dims=n_input,
                     n_output_dims=7*self.n_offsets,
-                    encoding_config=hash_config,
+                    encoding_config=encoding_config,
                     network_config=mlp_config
                 ).cuda()
                 self.mlp_cov.load_state_dict(mlp_state_dict['mlp_cov'])
@@ -1717,7 +1749,7 @@ class GaussianModel:
                 self.mlp_color = tcnn.NetworkWithInputEncoding(
                     n_input_dims=n_input,
                     n_output_dims=3*self.n_offsets,
-                    encoding_config=hash_config,
+                    encoding_config=encoding_config,
                     network_config=color_mlp_config
                 ).cuda()
                 self.mlp_color.load_state_dict(mlp_state_dict['mlp_color'])
