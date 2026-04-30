@@ -2,7 +2,10 @@ import os
 
 import re
 from setuptools import setup
-from pkg_resources import parse_version
+try:
+    from packaging.version import parse as parse_version
+except ImportError:
+    from pkg_resources import parse_version
 import subprocess
 import shutil
 import sys
@@ -77,8 +80,8 @@ if os.name == "nt":
 		os.environ["PATH"] += ";" + cl_path
 	else:
 		# cl.exe was found in PATH, so we can assume that the user is already in a developer command prompt
-		# In this case, BuildExtensions requires the following environment variable to be set such that it
-		# won't try to activate a developer command prompt a second time.
+		# In this case, BuildExtensions requires the following environment variable to be set such that
+		# it won't try to activate a developer command prompt a second time.
 		os.environ["DISTUTILS_USE_SDK"] = "1"
 
 cpp_standard = 14
