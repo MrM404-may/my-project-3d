@@ -1397,6 +1397,9 @@ class GaussianModel:
                     # 为新锚点创建region属性
                     new_region = torch.full((new_anchor.shape[0],), current_region, dtype=torch.float, device='cuda')
                     self._region = torch.cat([self._region, new_region], dim=0)
+                # 为新锚点添加_anchor_feat_dict空字典
+                for _ in range(new_anchor.shape[0]):
+                    self._anchor_feat_dict.append({})
 
     def adjust_anchor(self, iteration, check_interval=100, success_threshold=0.8, grad_threshold=0.0002, update_ratio=0.5, extra_ratio=4.0, extra_up=0.25, min_opacity=0.005):
         """ 冻结模式：禁止调整高斯密度 """
