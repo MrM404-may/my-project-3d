@@ -105,6 +105,9 @@ class GaussianModel:
         self._offset = torch.empty(0)
         self._anchor_feat = torch.empty(0)
         self._anchor_feat_dict = []  # 新结构：每个anchor一个dict [{(r,m): feat, ...}, ...]
+        # 【优化】缓存特征集合，避免每次重新收集
+        self._anchor_feat_cache = None  # {(unique_features, anchor_indices)}
+        self._anchor_feat_cache_valid = False
         self.opacity_accum = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
@@ -264,9 +267,31 @@ class GaussianModel:
     def get_anchor_feat(self):
         return self._anchor_feat
     
+    # 【优化】辅助函数：使缓存失效（应在修改特征后调用
+    def _invalidate_anchor_feat_cache(self):
+        self._anchor_feat_cache_valid = False
+    
+    # 【优化】辅助函数：更新缓存（构建唯一特征集合
+    def _update_anchor_feat_cache(self):
+        if not self._anchor_feat_cache_valid or self._anchor_feat_cache is None:
+            unique_features = {}
+            anchor_indices = {}
+            for i, feat_dict in enumerate(self._anchor_feat_dict):
+                if len(feat_dict) > 0:
+                    for (r, m_idx), feat in feat_dict.items():
+                        key = (r, m_idx)
+                        if key not in unique_features:
+                            unique_features[key] = []
+                            anchor_indices[key] = []
+                        unique_features[key].append(feat)
+                        anchor_indices[key].append(i)
+            self._anchor_feat_cache = (unique_features, anchor_indices)
+            self._anchor_feat_cache_valid = True
+        return self._anchor_feat_cache
+    
     def get_anchor_feat_at_moment(self, moment=None, region=None):
         """
-        获取指定 (region, moment) 的 anchor 特征（向量化版本）
+        获取指定 (region, moment) 的 anchor 特征（向量化+缓存版本）
         Args:
             moment: 时刻标识，如果为 None 则使用默认 0
             region: 区域标识，如果为 None 则使用该 anchor 的 _region 属性
@@ -277,26 +302,15 @@ class GaussianModel:
         if N == 0:
             return self._anchor_feat
         
-        # 快速路径：如果没有自定义时刻特征，直接返回默认特征
+        # 快速路径 1：如果没有自定义时刻特征，直接返回默认特征
         if len(self._anchor_feat_dict) == 0 or all(len(d) == 0 for d in self._anchor_feat_dict):
             return self._anchor_feat
         
         feat_dim = self._anchor_feat.shape[1]
         m = moment if moment is not None else 0
         
-        # 收集所有唯一的 (region, moment) 组合及其特征
-        unique_features = {}  # {(r, m): tensor[N_custom, feat_dim]}
-        anchor_indices = {}   # {(r, m): list of anchor indices}
-        
-        for i, feat_dict in enumerate(self._anchor_feat_dict):
-            if len(feat_dict) > 0:
-                for (r, m_idx), feat in feat_dict.items():
-                    key = (r, m_idx)
-                    if key not in unique_features:
-                        unique_features[key] = []
-                        anchor_indices[key] = []
-                    unique_features[key].append(feat)
-                    anchor_indices[key].append(i)
+        # 快速路径 2：使用缓存的特征集合
+        unique_features, anchor_indices = self._update_anchor_feat_cache()
         
         # 如果请求的 (region, moment) 存在且有足够数据，使用向量化方式
         target_key = (region, m) if region is not None else None
@@ -344,6 +358,8 @@ class GaussianModel:
             for _ in range(anchor_idx - len(self._anchor_feat_dict) + 1):
                 self._anchor_feat_dict.append({})
         self._anchor_feat_dict[anchor_idx][(region, moment)] = feat
+        # 修改特征后使缓存失效
+        self._invalidate_anchor_feat_cache()
     
     def get_opacity_mlp(self, region=0):
         return self.mlp_opacity[region]   
