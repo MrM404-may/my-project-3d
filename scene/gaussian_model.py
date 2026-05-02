@@ -268,16 +268,20 @@ class GaussianModel:
         """
         获取指定(region, moment)组合的 anchor 特征
         Args:
-            region: 区域标识，如果为 None 则使用默认
-            moment: 时刻标识，如果为 None 则使用默认
+            region: 区域标识，如果为 None 则使用默认 (0, 0)
+            moment: 时刻标识，如果为 None 则使用默认 (0, 0)
         Returns:
             对应特征张量 [num_gaussians, feat_dim]
         """
         if region is None or moment is None:
-            return self._anchor_feat
-        key = (region, moment)
+            key = (0, 0)
+        else:
+            key = (region, moment)
+        
         if key not in self._anchor_feat_dict:
-            return self._anchor_feat
+            # 如果 key 不存在，使用 _anchor_feat 初始化并存储到 dict
+            self._anchor_feat_dict[key] = self._anchor_feat
+        
         return self._anchor_feat_dict[key]
     
     def set_anchor_feat_at_moment(self, region, moment, feat):
