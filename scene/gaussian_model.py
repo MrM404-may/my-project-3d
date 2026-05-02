@@ -279,8 +279,8 @@ class GaussianModel:
             key = (region, moment)
         
         if key not in self._anchor_feat_dict:
-            # 如果 key 不存在，使用 _anchor_feat 初始化并存储到 dict
-            self._anchor_feat_dict[key] = self._anchor_feat
+            # 如果 key 不存在，使用 _anchor_feat 克隆一份独立副本存储到 dict
+            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
         
         return self._anchor_feat_dict[key]
     
