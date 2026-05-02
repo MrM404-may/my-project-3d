@@ -283,8 +283,19 @@ class GaussianModel:
             # 确保特征长度与当前 anchor 数量一致
             num_anchors = self._anchor.shape[0] if self._anchor is not None and self._anchor.numel() > 0 else 0
             
-            if self._anchor_feat is not None and self._anchor_feat.numel() > 0 and self._anchor_feat.shape[0] == num_anchors:
-                # 如果 _anchor_feat 长度匹配，使用它克隆
+            # 优先使用 _anchor_feat_dict 中已有的特征作为模板，确保形状一致
+            template_feat = None
+            if len(self._anchor_feat_dict) > 0:
+                # 获取任意一个已存在的特征作为模板
+                template_feat = next(iter(self._anchor_feat_dict.values()))
+                if template_feat.shape[0] == num_anchors:
+                    # 使用模板特征克隆
+                    new_feat = nn.Parameter(template_feat.clone().detach().requires_grad_(True))
+                else:
+                    # 模板形状不匹配，创建零张量
+                    new_feat = nn.Parameter(torch.zeros(num_anchors, self.feat_dim, device='cuda').requires_grad_(True))
+            elif self._anchor_feat is not None and self._anchor_feat.numel() > 0 and self._anchor_feat.shape[0] == num_anchors:
+                # 回退到使用 _anchor_feat 作为模板
                 new_feat = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
             else:
                 # 否则创建零张量
@@ -1208,12 +1219,19 @@ class GaussianModel:
                         if group["name"] == param_name:
                             stored_state = self.optimizer.state.get(group['params'][0], None)
                             if stored_state is not None:
-                                # 裁剪优化器状态
-                                stored_state["exp_avg"] = stored_state["exp_avg"][valid_points_mask]
-                                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][valid_points_mask]
-                                del self.optimizer.state[group['params'][0]]
-                                group["params"][0] = new_feat
-                                self.optimizer.state[group['params'][0]] = stored_state
+                                # 检查优化器状态形状是否匹配
+                                if "exp_avg" in stored_state and stored_state["exp_avg"].shape[0] == mask.shape[0]:
+                                    # 裁剪优化器状态
+                                    stored_state["exp_avg"] = stored_state["exp_avg"][valid_points_mask]
+                                    stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][valid_points_mask]
+                                    del self.optimizer.state[group['params'][0]]
+                                    group["params"][0] = new_feat
+                                    self.optimizer.state[group['params'][0]] = stored_state
+                                else:
+                                    # 形状不匹配，重新初始化优化器状态
+                                    print(f"Warning: Optimizer state for {param_name} shape mismatch, resetting state")
+                                    del self.optimizer.state[group['params'][0]]
+                                    group["params"][0] = new_feat
                             else:
                                 group["params"][0] = new_feat
                             break
