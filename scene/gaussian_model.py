@@ -82,6 +82,12 @@ class GaussianModel:
         self.embedding_appearance = nn.ModuleList()
         for i in range(self.num_regions):
             self.embedding_appearance.append(None)
+        
+        # 新增：为每个高斯存储不同时刻的外观特征
+        # 结构：[num_gaussians, num_timesteps, appearance_dim]
+        # 初始化为空，会在 set_appearance 或 create_from_pcd 中初始化
+        self.appearance_features = None
+        self.num_timesteps = 0  # 存储的时间步数
         self.add_opacity_dist = add_opacity_dist
         self.add_cov_dist = add_cov_dist
         self.add_color_dist = add_color_dist
@@ -206,22 +212,41 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self.appearance_features,  # 新增
+            self.num_timesteps,       # 新增
         )
     
     def restore(self, model_args, training_args):
         # 注意：如果是从 Checkpoint 恢复，可能需要同时恢复 _stored_anchors，
         # 但为了简单，这里假设恢复时是从头开始或不需要恢复旧区域数据。
-        (self.active_sh_degree, 
-        self._anchor, 
-        self._level,
-        self._offset,
-        self._local,
-        self._scaling, 
-        self._rotation, 
-        self._opacity,
-        denom,
-        opt_dict, 
-        self.spatial_lr_scale) = model_args
+        if len(model_args) == 10:
+            # 旧格式
+            (self.active_sh_degree, 
+            self._anchor, 
+            self._level,
+            self._offset,
+            self._local,
+            self._scaling, 
+            self._rotation, 
+            self._opacity,
+            denom,
+            opt_dict, 
+            self.spatial_lr_scale) = model_args
+        else:
+            # 新格式，包含 appearance_features
+            (self.active_sh_degree, 
+            self._anchor, 
+            self._level,
+            self._offset,
+            self._local,
+            self._scaling, 
+            self._rotation, 
+            self._opacity,
+            denom,
+            opt_dict, 
+            self.spatial_lr_scale,
+            self.appearance_features,
+            self.num_timesteps) = model_args
         self.training_setup(training_args)
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
@@ -276,10 +301,65 @@ class GaussianModel:
     def get_featurebank_mlp(self):
         return self.mlp_feature_bank
     
-    def set_appearance(self, num_cameras):
+    def set_appearance(self, num_cameras, num_timesteps=None):
         if self.appearance_dim > 0:
             for i in range(self.num_regions):
                 self.embedding_appearance[i] = Embedding(num_cameras, self.appearance_dim).cuda()
+            
+            # 新增：初始化每个高斯的多时刻外观特征
+            if num_timesteps is not None and hasattr(self, '_anchor') and self._anchor.shape[0] > 0:
+                self.init_appearance_features(self._anchor.shape[0], num_timesteps)
+    
+    def init_appearance_features(self, num_gaussians, num_timesteps):
+        """
+        初始化每个高斯的多时刻外观特征
+        参数:
+            num_gaussians: 高斯数量
+            num_timesteps: 时间步数
+        """
+        if self.appearance_dim > 0:
+            self.num_timesteps = num_timesteps
+            # 使用 nn.Parameter 以便可训练
+            self.appearance_features = nn.Parameter(
+                torch.zeros((num_gaussians, num_timesteps, self.appearance_dim), 
+                           dtype=torch.float32, device='cuda').requires_grad_(True)
+            )
+    
+    def get_appearance_for_timestep(self, timestep_idx, region=0):
+        """
+        获取指定时刻的外观特征
+        参数:
+            timestep_idx: 时刻索引，可以是标量或张量
+            region: 区域索引（可选，用于兼容现有代码）
+        返回:
+            外观特征张量，形状为 [num_gaussians, appearance_dim] 或 [batch_size, appearance_dim]
+        """
+        if self.appearance_features is None or self.num_timesteps == 0:
+            return None
+        
+        if isinstance(timestep_idx, int):
+            # 返回所有高斯在该时刻的特征
+            return self.appearance_features[:, timestep_idx, :]
+        else:
+            # 如果 timestep_idx 是张量，对每个高斯取对应时刻的特征
+            # 需要确保 timestep_idx 的形状与高斯数量匹配
+            return self.appearance_features[torch.arange(self.appearance_features.shape[0]), timestep_idx, :]
+    
+    def set_appearance_for_timestep(self, timestep_idx, features, gaussian_indices=None):
+        """
+        设置指定时刻的外观特征
+        参数:
+            timestep_idx: 时刻索引
+            features: 要设置的特征
+            gaussian_indices: 要设置的高斯索引（可选，默认全部）
+        """
+        if self.appearance_features is None:
+            return
+        
+        if gaussian_indices is None:
+            self.appearance_features[:, timestep_idx, :] = features
+        else:
+            self.appearance_features[gaussian_indices, timestep_idx, :] = features
         
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)    
@@ -336,7 +416,7 @@ class GaussianModel:
         time_diff = t1 - t0
         print(f"Building octree time: {int(time_diff // 60)} min {time_diff % 60} sec")
 
-    def create_from_pcd(self, points, spatial_lr_scale, logger=None):
+    def create_from_pcd(self, points, spatial_lr_scale, logger=None, num_timesteps=None):
         self.spatial_lr_scale = spatial_lr_scale
         box_min = torch.min(points)*self.extend
         box_max = torch.max(points)*self.extend
@@ -391,6 +471,10 @@ class GaussianModel:
         self._extra_level = torch.zeros(self._anchor.shape[0], dtype=torch.float, device="cuda")
         self._region = torch.zeros(self._anchor.shape[0], dtype=torch.float, device="cuda")
         self._anchor_mask = torch.ones(self._anchor.shape[0], dtype=torch.bool, device="cuda")
+        
+        # 新增：初始化外观特征
+        if num_timesteps is not None and self.appearance_dim > 0:
+            self.init_appearance_features(self.positions.shape[0], num_timesteps)
 
     def map_to_int_level(self, pred_level, cur_level):
         if self.dist2level=='floor':
@@ -477,6 +561,9 @@ class GaussianModel:
 
         if self.appearance_dim > 0:
             l.append({'params': self.embedding_appearance.parameters(), 'lr': training_args.appearance_lr_init, "name": "embedding_appearance"})
+            # 新增：添加 appearance_features 到优化器
+            if self.appearance_features is not None:
+                l.append({'params': [self.appearance_features], 'lr': training_args.appearance_lr_init, "name": "appearance_features"})
         if self.use_feat_bank:
             l.append({'params': self.mlp_feature_bank.parameters(), 'lr': training_args.mlp_featurebank_lr_init, "name": "mlp_featurebank"})
 
@@ -540,6 +627,9 @@ class GaussianModel:
                 lr = self.mlp_featurebank_scheduler_args(iteration)
                 param_group['lr'] = lr
             if self.appearance_dim > 0 and param_group["name"] == "embedding_appearance":
+                lr = self.appearance_scheduler_args(iteration)
+                param_group['lr'] = lr
+            if self.appearance_dim > 0 and param_group["name"] == "appearance_features":
                 lr = self.appearance_scheduler_args(iteration)
                 param_group['lr'] = lr
             
