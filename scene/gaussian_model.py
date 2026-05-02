@@ -264,13 +264,12 @@ class GaussianModel:
     def get_anchor_feat(self):
         return self._anchor_feat
     
-    def get_anchor_feat_at_moment(self, region=None, moment=None, feature_lr=None):
+    def get_anchor_feat_at_moment(self, region=None, moment=None):
         """
         获取指定(region, moment)组合的 anchor 特征
         Args:
             region: 区域标识，如果为 None 则使用默认 (0, 0)
             moment: 时刻标识，如果为 None 则使用默认 (0, 0)
-            feature_lr: 学习率，如果提供且 optimizer 存在，会自动添加到优化器
         Returns:
             对应特征张量 [num_gaussians, feat_dim]
         """
@@ -282,14 +281,6 @@ class GaussianModel:
         if key not in self._anchor_feat_dict:
             # 如果 key 不存在，使用 _anchor_feat 克隆一份独立副本存储到 dict
             self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
-            
-            # 如果提供了 feature_lr 且 optimizer 存在，自动添加到优化器
-            if feature_lr is not None and self.optimizer is not None:
-                self.optimizer.add_param_group({
-                    'params': [self._anchor_feat_dict[key]], 
-                    'lr': feature_lr, 
-                    'name': f"anchor_feat_r{key[0]}_m{key[1]}"
-                })
         
         return self._anchor_feat_dict[key]
     
