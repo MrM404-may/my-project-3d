@@ -58,7 +58,10 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
             return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device)
 
     anchor = pc.get_anchor[visible_mask][region_mask]
-    feat = pc.get_anchor_feat_at_moment(moment)[visible_mask][region_mask]
+    # 先获取所有可见锚点的特征，然后再用 region_mask 过滤
+    # 因为 region 是每个锚点特有的，get_anchor_feat_at_moment 需要基于原始索引
+    all_feat = pc.get_anchor_feat_at_moment(moment=moment, region=camera_region)
+    feat = all_feat[visible_mask][region_mask]
     level = pc.get_level[visible_mask][region_mask]
     grid_offsets = pc._offset[visible_mask][region_mask]
     grid_scaling = pc.get_scaling[visible_mask][region_mask]
