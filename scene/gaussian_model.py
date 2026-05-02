@@ -280,7 +280,24 @@ class GaussianModel:
         
         if key not in self._anchor_feat_dict:
             # 如果 key 不存在，使用 _anchor_feat 克隆一份独立副本存储到 dict
-            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
+            new_feat = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
+            self._anchor_feat_dict[key] = new_feat
+            
+            # 自动添加到优化器（如果优化器已存在且 key 不是 (0, 0)）
+            if self.optimizer is not None and key != (0, 0):
+                # 从现有参数组获取 feature_lr
+                feature_lr = None
+                for group in self.optimizer.param_groups:
+                    if group["name"] == "anchor_feat":
+                        feature_lr = group["lr"]
+                        break
+                
+                if feature_lr is not None:
+                    self.optimizer.add_param_group({
+                        'params': [new_feat],
+                        'lr': feature_lr,
+                        'name': f"anchor_feat_r{key[0]}_m{key[1]}"
+                    })
         
         return self._anchor_feat_dict[key]
     
