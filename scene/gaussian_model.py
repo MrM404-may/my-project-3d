@@ -1453,6 +1453,10 @@ class GaussianModel:
             if self.use_feat_bank:
                 feature_bank_mlp = torch.jit.trace(self.mlp_feature_bank, (torch.rand(1, 3+self.level_dim).cuda()))
                 feature_bank_mlp.save(os.path.join(path, 'feature_bank_mlp.pt'))
+            # 保存多时刻特征到单独文件
+            if self._anchor_feat_by_moment:
+                moment_data = {moment: feat.detach().cpu() for moment, feat in self._anchor_feat_by_moment.items()}
+                torch.save(moment_data, os.path.join(path, 'anchor_feat_moments.pt'))
             self.train()
         elif mode == 'unite':
             param_dict = {}
@@ -1503,6 +1507,13 @@ class GaussianModel:
             # 加载其他不变的MLP
             if self.use_feat_bank:
                 self.mlp_feature_bank = torch.jit.load(os.path.join(path, 'feature_bank_mlp.pt')).cuda()
+            # 加载多时刻特征
+            moments_path = os.path.join(path, 'anchor_feat_moments.pt')
+            if os.path.exists(moments_path):
+                moment_data = torch.load(moments_path)
+                for moment, feat_cpu in moment_data.items():
+                    self._anchor_feat_by_moment[moment] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
+                print(f"Loaded {len(self._anchor_feat_by_moment)} moment features from {moments_path}")
         elif mode == 'unite':
             checkpoint = torch.load(os.path.join(path, 'checkpoints.pth'))
             for i, state_dict in enumerate(checkpoint['opacity_mlp']):
