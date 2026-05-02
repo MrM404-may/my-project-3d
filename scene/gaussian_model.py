@@ -643,7 +643,7 @@ class GaussianModel:
         
         # 保存多(region, moment)组合的特征到单独的 .pt 文件
         if self._anchor_feat_dict:
-            moment_feat_path = path.replace('.ply', '_moments.pt')
+            moment_feat_path = os.path.join(os.path.dirname(path), 'anchor_feat_moments.pt')
             moment_data = {}
             for key, feat in self._anchor_feat_dict.items():
                 moment_data[key] = feat.detach().cpu()
@@ -714,7 +714,7 @@ class GaussianModel:
         # 确保默认 (region=0, moment=0) 的特征存在
         self._anchor_feat_dict[(0, 0)] = self._anchor_feat
         # 加载多(region, moment)组合的特征（如果存在）
-        moment_feat_path = path.replace('.ply', '_moments.pt')
+        moment_feat_path = os.path.join(os.path.dirname(path), 'anchor_feat_moments.pt')
         if os.path.exists(moment_feat_path):
             moment_data = torch.load(moment_feat_path)
             for key, feat_cpu in moment_data.items():
