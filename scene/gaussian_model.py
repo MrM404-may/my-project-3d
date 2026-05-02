@@ -766,11 +766,20 @@ class GaussianModel:
                 'feat_base' in group['name'] or \
                 'embedding' in group['name']:
                 continue
-            # 跳过动态创建的 anchor_feat_r*_m* 参数，这些会在后面单独处理
-            if group['name'].startswith('anchor_feat_r') and '_m' in group['name']:
-                continue
             assert len(group["params"]) == 1
-            extension_tensor = tensors_dict[group["name"]]
+            
+            # 处理动态创建的 anchor_feat_r*_m* 参数
+            if group['name'].startswith('anchor_feat_r') and '_m' in group['name']:
+                # 从名称中解析出 (region, moment)
+                name_parts = group['name'].split('_')
+                r = int(name_parts[2][1:])
+                m = int(name_parts[3][1:])
+                key = (r, m)
+                # 使用 tensors_dict 中的 anchor_feat 作为 extension
+                extension_tensor = tensors_dict["anchor_feat"]
+            else:
+                extension_tensor = tensors_dict[group["name"]]
+            
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
@@ -1199,23 +1208,17 @@ class GaussianModel:
         self._extra_level = self._extra_level[valid_points_mask]
         self._region = self._region[valid_points_mask]
         
-        # ====================== 【重要】同步所有 (region, moment) 特征 ======================
+        # ====================== 【重要】同步所有 (region, moment) 特征字典 ======================
+        # 更新字典中的 (0, 0)
         self._anchor_feat_dict[(0, 0)] = self._anchor_feat
         
-        # 直接裁剪所有其他 key 的特征
+        # 更新字典中其他键的引用，这些已经被 _prune_anchor_optimizer 处理过了
         for key in list(self._anchor_feat_dict.keys()):
             if key == (0, 0):
                 continue
-            # 直接裁剪
-            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat_dict[key][valid_points_mask].requires_grad_(True))
-            # 更新优化器中的参数引用
-            if self.optimizer is not None:
-                param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
-                for group in self.optimizer.param_groups:
-                    if group["name"] == param_name:
-                        # 直接替换参数引用，重置优化器状态
-                        group["params"][0] = self._anchor_feat_dict[key]
-                        break
+            param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
+            if param_name in optimizable_tensors:
+                self._anchor_feat_dict[key] = optimizable_tensors[param_name]
         
         # ====================== 【新增】同步剪枝训练统计量 ======================
         # 检查统计量是否已初始化且长度匹配
@@ -1407,27 +1410,17 @@ class GaussianModel:
                     new_region = torch.full((new_anchor.shape[0],), current_region, dtype=torch.float, device='cuda')
                     self._region = torch.cat([self._region, new_region], dim=0)
                 
-                # ====================== 【重要】同步所有 (region, moment) 特征 ======================
+                # ====================== 【重要】同步所有 (region, moment) 特征字典 ======================
+                # 更新字典中的 (0, 0)
                 self._anchor_feat_dict[(0, 0)] = self._anchor_feat
                 
-                num_new = new_anchor.shape[0]
-                
-                # 直接扩展所有其他 key 的特征
+                # 更新字典中其他键的引用，这些已经被 cat_tensors_to_optimizer 处理过了
                 for key in list(self._anchor_feat_dict.keys()):
                     if key == (0, 0):
                         continue
-                    original_feat = self._anchor_feat_dict[key]
-                    # 直接扩展
-                    fill_feat = original_feat[0:1].repeat(num_new, 1)
-                    self._anchor_feat_dict[key] = nn.Parameter(torch.cat([original_feat, fill_feat], dim=0).requires_grad_(True))
-                    # 更新优化器中的参数引用
-                    if self.optimizer is not None:
-                        param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
-                        for group in self.optimizer.param_groups:
-                            if group["name"] == param_name:
-                                # 直接替换参数引用，重置优化器状态
-                                group["params"][0] = self._anchor_feat_dict[key]
-                                break
+                    param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
+                    if param_name in optimizable_tensors:
+                        self._anchor_feat_dict[key] = optimizable_tensors[param_name]
 
     def adjust_anchor(self, iteration, check_interval=100, success_threshold=0.8, grad_threshold=0.0002, update_ratio=0.5, extra_ratio=4.0, extra_up=0.25, min_opacity=0.005):
         """ 冻结模式：禁止调整高斯密度 """
