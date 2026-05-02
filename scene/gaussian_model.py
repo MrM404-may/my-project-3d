@@ -302,27 +302,116 @@ class RenderingAnchorFeatStorage:
         return False
     
     def save(self, path: str):
-        """保存特征存储"""
-        save_data = {
-            'storage': self._storage,
-            'feat_dim': self.feat_dim
+        """
+        保存特征存储（结构化保存，便于调试和恢复）
+        
+        保存的结构：
+        {
+            'version': 1,
+            'feat_dim': int,
+            'device': str,
+            'total_features': int,
+            'data': {
+                (region, moment): {
+                    'anchor_poses': list,
+                    'feats': Tensor
+                }
+            }
         }
+        """
+        save_dir = os.path.dirname(path)
+        if save_dir and not os.path.exists(save_dir):
+            os.makedirs(save_dir, exist_ok=True)
+        
+        # 构建结构化数据
+        data = {}
+        total_features = 0
+        
+        for (region, moment), feat_dict in self._storage.items():
+            anchor_poses = list(feat_dict.keys())
+            feats_list = [feat_dict[pos] for pos in anchor_poses]
+            feats_tensor = torch.stack(feats_list, dim=0) if feats_list else torch.empty(0, self.feat_dim)
+            
+            data[(region, moment)] = {
+                'anchor_poses': anchor_poses,
+                'feats': feats_tensor.detach().cpu()  # 保存到CPU
+            }
+            total_features += len(anchor_poses)
+        
+        save_data = {
+            'version': 1,
+            'feat_dim': self.feat_dim,
+            'device': self.device,
+            'total_features': total_features,
+            'data': data
+        }
+        
         torch.save(save_data, path)
-        print(f"RenderingAnchorFeatStorage: Saved storage to {path}")
+        print(f"RenderingAnchorFeatStorage: Saved {total_features} features to {path}")
+        return save_data
     
-    def load(self, path: str, device='cuda'):
-        """加载特征存储"""
-        if os.path.exists(path):
-            load_data = torch.load(path)
+    def load(self, path: str, device='cuda', strict=True):
+        """
+        加载特征存储（可靠的恢复）
+        
+        Args:
+            path: 文件路径
+            device: 目标设备
+            strict: 是否严格检查版本等
+        """
+        if not os.path.exists(path):
+            if strict:
+                raise FileNotFoundError(f"RenderingAnchorFeatStorage: File not found at {path}")
+            else:
+                print(f"RenderingAnchorFeatStorage: File not found at {path}, initializing empty storage")
+                return
+        
+        load_data = torch.load(path, map_location='cpu')
+        
+        # 检查版本兼容性
+        if 'version' not in load_data:
+            # 尝试兼容旧格式
             if 'storage' in load_data:
+                print(f"RenderingAnchorFeatStorage: Loading legacy format")
                 self._storage = load_data['storage']
                 if 'feat_dim' in load_data:
                     self.feat_dim = load_data['feat_dim']
-                # 清除缓存
                 self._tensor_cache = {}
-                print(f"RenderingAnchorFeatStorage: Loaded storage from {path}")
-        else:
-            print(f"RenderingAnchorFeatStorage: Storage file not found at {path}")
+                print(f"RenderingAnchorFeatStorage: Loaded legacy format from {path}")
+                return
+        
+        version = load_data.get('version', 0)
+        if strict and version != 1:
+            raise RuntimeError(f"RenderingAnchorFeatStorage: Unsupported version {version}")
+        
+        # 恢复基本参数
+        self.feat_dim = load_data.get('feat_dim', self.feat_dim)
+        self.device = device
+        
+        # 恢复数据
+        self._storage = {}
+        total_loaded = 0
+        data = load_data.get('data', {})
+        
+        for (region, moment), entry in data.items():
+            anchor_poses = entry.get('anchor_poses', [])
+            feats_tensor = entry.get('feats', torch.empty(0, self.feat_dim))
+            
+            # 移动到目标设备
+            feats_tensor = feats_tensor.to(device)
+            
+            # 构建存储
+            self._storage[(region, moment)] = {}
+            for i, pos in enumerate(anchor_poses):
+                self._storage[(region, moment)][pos] = feats_tensor[i]
+            
+            total_loaded += len(anchor_poses)
+        
+        # 清除缓存
+        self._tensor_cache = {}
+        
+        print(f"RenderingAnchorFeatStorage: Loaded {total_loaded} features from {path}")
+        return load_data
 
 # =====================================================================
 from datetime import timedelta
@@ -697,6 +786,40 @@ class GaussianModel:
         # 回退到原有的训练模式逻辑
         return self.get_anchor_feat_at_moment(region, moment)
     
+    def save_rendering_features(self, path: str):
+        """
+        训练结束时保存渲染用特征存储
+        Args:
+            path: 保存路径，例如 'output/scene/feat_storage.pt'
+        """
+        if len(self.rendering_feat_storage) == 0:
+            # 如果渲染存储是空的，尝试从当前的 _anchor_feat_dict 构建
+            print(f"save_rendering_features: Building rendering storage from current features")
+            self._build_rendering_storage_from_current()
+        
+        return self.rendering_feat_storage.save(path)
+    
+    def load_rendering_features(self, path: str, device='cuda', strict=True):
+        """
+        渲染时加载特征存储
+        Args:
+            path: 加载路径
+            device: 目标设备
+            strict: 是否严格检查
+        """
+        return self.rendering_feat_storage.load(path, device, strict)
+    
+    def _build_rendering_storage_from_current(self):
+        """从当前训练用的特征字典构建渲染存储"""
+        # 使用当前的索引作为 anchor_pos
+        for (region, moment), feat_tensor in self._anchor_feat_dict.items():
+            num_anchors = feat_tensor.shape[0]
+            anchor_poses = list(range(num_anchors))
+            self.rendering_feat_storage.add_region_features_batch(
+                region, moment, anchor_poses, feat_tensor
+            )
+        print(f"_build_rendering_storage_from_current: Built storage with {len(self.rendering_feat_storage)} total features")
+    
     def load_region_features_for_render(self, region_paths: list):
         """
         从多个区域的checkpoint路径加载特征并合并用于渲染
@@ -706,19 +829,30 @@ class GaussianModel:
         region_feature_dict = {}
         
         for i, path in enumerate(region_paths):
-            # 先尝试加载该区域的anchor_feat_moments.pt
+            # 先尝试加载该区域预存的 feat_storage.pt（推荐方式）
+            storage_path = os.path.join(path, 'feat_storage.pt')
+            if os.path.exists(storage_path):
+                # 如果有预存的完整 storage，直接加载并合并
+                temp_storage = RenderingAnchorFeatStorage(self.feat_dim)
+                temp_storage.load(storage_path, strict=False)
+                # 将 temp_storage 的内容合并到当前 storage
+                for (r, m), feat_dict in temp_storage._storage.items():
+                    for pos, feat in feat_dict.items():
+                        self.rendering_feat_storage.add_feature(r, m, pos, feat)
+                print(f"load_region_features_for_render: Loaded pre-saved storage from region {i}")
+                continue
+            
+            # 否则，尝试加载该区域的anchor_feat_moments.pt
             moments_path = os.path.join(path, 'point_cloud', f'iteration_160000', 'anchor_feat_moments.pt')
             if not os.path.exists(moments_path):
-                # 尝试其他可能的路径
                 moments_path = os.path.join(os.path.dirname(path), 'anchor_feat_moments.pt')
             
             if os.path.exists(moments_path):
                 region_data = torch.load(moments_path)
-                # 对于每个区域，我们使用region_id作为anchor位置的前缀
-                # 或者可以加载该区域的ply文件来获取anchor的唯一标识
+                # 使用 (region_id, local_idx) 组合作为唯一的 anchor_pos
                 region_feature_dict[i] = {
-                    'anchor_feat_dict': region_data
-                    # 'anchor_positions': 可以根据需要从ply文件加载
+                    'anchor_feat_dict': region_data,
+                    'anchor_positions': [(i, j) for j in range(len(next(iter(region_data.values()))))]
                 }
                 print(f"load_region_features_for_render: Loaded features from region {i} at {path}")
         
