@@ -59,17 +59,21 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
 
     anchor = pc.get_anchor[visible_mask][region_mask]
     
-    # 获取过滤后的 anchor 索引（用于新的渲染存储）
-    # 先找到 visible_mask 为 True 的位置，再在其中应用 region_mask
+    # 获取过滤后的 anchor 索引
     visible_indices = torch.where(visible_mask)[0]
     final_indices = visible_indices[region_mask]
     
-    # 使用新的渲染方法获取特征（优先使用渲染存储）
-    try:
-        feat = pc.get_anchor_feat_for_render(region=camera_region, moment=moment, anchor_indices=final_indices)
-    except Exception as e:
-        # 回退到旧方法
+    # 根据模式获取特征
+    if is_training or pc.mode == 'training':
+        # 训练模式：使用旧方法
         feat = pc.get_anchor_feat_at_moment(region=camera_region, moment=moment)[visible_mask][region_mask]
+    else:
+        # 渲染模式：尝试使用新存储
+        try:
+            feat = pc.get_anchor_feat_for_render(region=camera_region, moment=moment, anchor_indices=final_indices)
+        except Exception as e:
+            # 回退到旧方法
+            feat = pc.get_anchor_feat_at_moment(region=camera_region, moment=moment)[visible_mask][region_mask]
     
     level = pc.get_level[visible_mask][region_mask]
     grid_offsets = pc._offset[visible_mask][region_mask]

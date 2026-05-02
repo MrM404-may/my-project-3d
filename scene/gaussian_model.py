@@ -470,8 +470,9 @@ class GaussianModel:
                  base_layer: int = 10,
                  progressive: bool = True,
                  extend: float = 1.1,
-                 freeze_gaussians: bool = False, # 新增：冻结高斯球开关
-                 num_regions: int = 65 # 新增：区域数量
+                 freeze_gaussians: bool = False,
+                 num_regions: int = 65,
+                 mode: str = 'training'  # 新增：模式选择 'training' 或 'rendering'
                  ):
 
         self.feat_dim = feat_dim
@@ -479,7 +480,7 @@ class GaussianModel:
         self.n_offsets = n_offsets
         self.fork = fork
         self.use_feat_bank = use_feat_bank
-        self.freeze_gaussians = freeze_gaussians  # 绑定冻结标志
+        self.freeze_gaussians = freeze_gaussians
 
         self.num_regions = num_regions
         self.appearance_dim = appearance_dim
@@ -508,19 +509,30 @@ class GaussianModel:
         self._region = torch.empty(0)
         self._offset = torch.empty(0)
         self._anchor_feat = torch.empty(0)
-        self._anchor_feat_dict = {}  # 新增：字典存储不同(region, moment)组合的特征 {(region, moment): [num_gaussians, feat_dim]}
+        self._anchor_feat_dict = {}  # 兼容旧的字典
         self.opacity_accum = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
         
-        # ====================== 新增：新的特征管理类 ======================
-        # 训练用的特征管理器（保持与现有流程兼容，可选使用）
-        self.training_feat_manager = TrainingAnchorFeatManager(feat_dim, device='cuda')
-        # 渲染用的特征存储（用于合并多区域后的渲染）
-        self.rendering_feat_storage = RenderingAnchorFeatStorage(feat_dim, device='cuda')
-        # 标志位：是否使用新的设计
-        self.use_new_feat_design = False
+        # ====================== 新增：特征管理系统 ======================
+        self.mode = mode  # 'training' 或 'rendering'
+        
+        if mode == 'training':
+            # 训练模式：初始化训练管理器
+            self.training_feat_manager = TrainingAnchorFeatManager(feat_dim, device='cuda')
+            self.rendering_feat_storage = None  # 训练模式不需要
+            print(f"GaussianModel: Initialized in TRAINING mode")
+        elif mode == 'rendering':
+            # 渲染模式：初始化渲染存储
+            self.training_feat_manager = None  # 渲染模式不需要
+            self.rendering_feat_storage = RenderingAnchorFeatStorage(feat_dim, device='cuda')
+            print(f"GaussianModel: Initialized in RENDERING mode")
+        else:
+            # 兼容模式：都初始化
+            self.training_feat_manager = TrainingAnchorFeatManager(feat_dim, device='cuda')
+            self.rendering_feat_storage = RenderingAnchorFeatStorage(feat_dim, device='cuda')
+            print(f"GaussianModel: Initialized in COMPATIBLE mode")
         # =================================================================
         
         self.offset_gradient_accum = torch.empty(0)
@@ -761,11 +773,10 @@ class GaussianModel:
     
     def get_anchor_feat_for_render(self, region: int, moment: int, anchor_indices: torch.Tensor = None):
         """
-        渲染时获取特征的方法
-        首先尝试使用渲染存储，如果没有则回退到训练模式
+        渲染时获取特征的方法 - 智能处理两种模式
         """
-        # 检查是否有渲染存储
-        if len(self.rendering_feat_storage) > 0:
+        # 情况1: 渲染模式且有存储
+        if self.mode == 'rendering' and self.rendering_feat_storage is not None:
             try:
                 if anchor_indices is not None:
                     # 批量获取
@@ -777,13 +788,12 @@ class GaussianModel:
                 else:
                     # 获取所有
                     feat_dict = self.rendering_feat_storage.get(region, moment)
-                    # 转换为张量形式
                     feats_list = list(feat_dict.values())
                     return torch.stack(feats_list, dim=0)
             except KeyError:
-                pass
+                print(f"Warning: Feature not found for ({region}, {moment}) in rendering storage")
         
-        # 回退到原有的训练模式逻辑
+        # 情况2: 训练模式或回退
         return self.get_anchor_feat_at_moment(region, moment)
     
     def save_rendering_features(self, path: str):
@@ -792,8 +802,8 @@ class GaussianModel:
         Args:
             path: 保存路径，例如 'output/scene/feat_storage.pt'
         """
-        if len(self.rendering_feat_storage) == 0:
-            # 如果渲染存储是空的，尝试从当前的 _anchor_feat_dict 构建
+        if self.rendering_feat_storage is None or len(self.rendering_feat_storage) == 0:
+            # 从当前的 _anchor_feat_dict 构建
             print(f"save_rendering_features: Building rendering storage from current features")
             self._build_rendering_storage_from_current()
         
@@ -807,6 +817,10 @@ class GaussianModel:
             device: 目标设备
             strict: 是否严格检查
         """
+        if self.rendering_feat_storage is None:
+            # 如果在非渲染模式，先创建存储
+            self.rendering_feat_storage = RenderingAnchorFeatStorage(self.feat_dim, device=device)
+        
         return self.rendering_feat_storage.load(path, device, strict)
     
     def _build_rendering_storage_from_current(self):
