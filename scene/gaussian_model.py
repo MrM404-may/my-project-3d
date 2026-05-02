@@ -279,8 +279,17 @@ class GaussianModel:
             key = (region, moment)
         
         if key not in self._anchor_feat_dict:
-            # 如果 key 不存在，使用 _anchor_feat 克隆一份独立副本存储到 dict
-            new_feat = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
+            # 如果 key 不存在，创建新的特征
+            # 确保特征长度与当前 anchor 数量一致
+            num_anchors = self._anchor.shape[0] if self._anchor is not None and self._anchor.numel() > 0 else 0
+            
+            if self._anchor_feat is not None and self._anchor_feat.numel() > 0 and self._anchor_feat.shape[0] == num_anchors:
+                # 如果 _anchor_feat 长度匹配，使用它克隆
+                new_feat = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
+            else:
+                # 否则创建零张量
+                new_feat = nn.Parameter(torch.zeros(num_anchors, self.feat_dim, device='cuda').requires_grad_(True))
+            
             self._anchor_feat_dict[key] = new_feat
             
             # 自动添加到优化器（如果优化器已存在且 key 不是 (0, 0)）
@@ -298,6 +307,7 @@ class GaussianModel:
                         'lr': feature_lr,
                         'name': f"anchor_feat_r{key[0]}_m{key[1]}"
                     })
+                    print(f"Created new anchor_feat for region {key[0]}, moment {key[1]} with shape {new_feat.shape}")
         
         return self._anchor_feat_dict[key]
     
@@ -1180,8 +1190,17 @@ class GaussianModel:
         
         # ====================== 【新增】同步剪枝多(region, moment)组合的特征 ======================
         # 裁剪字典中存储的所有特征
-        for key in self._anchor_feat_dict:
-            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat_dict[key][valid_points_mask].requires_grad_(True))
+        for key in list(self._anchor_feat_dict.keys()):
+            feat = self._anchor_feat_dict[key]
+            # 检查特征长度是否与 mask 匹配
+            if feat.shape[0] == mask.shape[0]:
+                self._anchor_feat_dict[key] = nn.Parameter(feat[valid_points_mask].requires_grad_(True))
+            elif feat.shape[0] == valid_points_mask.sum().item():
+                # 特征长度已经与新 anchor 数量一致，无需裁剪
+                pass
+            else:
+                # 长度不匹配，打印警告并跳过
+                print(f"Warning: anchor_feat_dict[{key}] length {feat.shape[0]} does not match mask length {mask.shape[0]}, skipping prune for this key")
         
         # ====================== 【新增】同步剪枝训练统计量 ======================
         # 检查统计量是否已初始化且长度匹配
