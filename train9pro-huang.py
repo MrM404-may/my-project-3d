@@ -670,17 +670,12 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
         # 例如：使用 viewpoint_cam.uid、iteration、或其他自定义标识作为时刻
         moment = viewpoint_cam.uid  # 默认使用相机 uid 作为时刻，您可以修改这一行
         
-        # 【新增】动态创建 (region, moment) 组合并自动添加到优化器
-        key = (current_region_idx, moment)
-        if key not in gaussians._anchor_feat_dict:
-            # 获取特征（会自动从 _anchor_feat 克隆一份独立副本）
-            feat = gaussians.get_anchor_feat_at_moment(region=current_region_idx, moment=moment)
-            # 添加到优化器
-            gaussians.optimizer.add_param_group({
-                'params': [feat], 
-                'lr': opt.feature_lr, 
-                'name': f"anchor_feat_r{current_region_idx}_m{moment}"
-            })
+        # 【新增】如果需要初始化某个(region, moment)的特征，可以使用以下代码（可选）
+        # if (current_region_idx, moment) not in gaussians._anchor_feat_dict:
+        #     # 复制默认特征作为初始值
+        #     init_feat = gaussians._anchor_feat.clone().detach().requires_grad_(True)
+        #     gaussians.set_anchor_feat_at_moment(region=current_region_idx, moment=moment, feat=init_feat)
+        #     # 注意：如果在训练中动态添加，需要重新设置 optimizer
         
         # 传递当前区域索引和时刻参数
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, visible_mask=voxel_visible_mask, retain_grad=retain_grad, camera_region=current_region_idx, moment=moment)
