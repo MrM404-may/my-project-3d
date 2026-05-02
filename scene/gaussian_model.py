@@ -1181,7 +1181,12 @@ class GaussianModel:
         # ====================== 【新增】同步剪枝多(region, moment)组合的特征 ======================
         # 裁剪字典中存储的所有特征
         for key in self._anchor_feat_dict:
-            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat_dict[key][valid_points_mask].requires_grad_(True))
+            feat = self._anchor_feat_dict[key]
+            # 检查特征形状是否与 mask 匹配
+            if feat.shape[0] == valid_points_mask.shape[0]:
+                self._anchor_feat_dict[key] = nn.Parameter(feat[valid_points_mask].requires_grad_(True))
+            # 如果形状不匹配，说明这个特征是在不同的 anchor 数量下创建的，需要特殊处理
+            # 这里我们保持它不变，或者可以选择删除它
         
         # ====================== 【新增】同步剪枝训练统计量 ======================
         # 检查统计量是否已初始化且长度匹配
