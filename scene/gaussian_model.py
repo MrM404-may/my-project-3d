@@ -1199,54 +1199,25 @@ class GaussianModel:
         self._extra_level = self._extra_level[valid_points_mask]
         self._region = self._region[valid_points_mask]
         
-        # ====================== 【重要】更新 _anchor_feat_dict[(0, 0)] ======================
-        # 因为 _anchor_feat 已经被更新，需要同步更新字典中的 (0, 0)
+        # ====================== 【重要】同步所有 (region, moment) 特征 ======================
+        # 所有特征都应该与 _anchor_feat 保持同步
         self._anchor_feat_dict[(0, 0)] = self._anchor_feat
         
-        # ====================== 【新增】同步剪枝多(region, moment)组合的特征 ======================
-        # 裁剪字典中存储的所有特征
-        target_num_anchors = valid_points_mask.sum().item()  # 目标 anchor 数量
-        
+        # 直接同步所有其他 key 的特征
         for key in list(self._anchor_feat_dict.keys()):
-            feat = self._anchor_feat_dict[key]
-            
-            # 检查特征长度是否与 mask 匹配
-            if feat.shape[0] == mask.shape[0]:
-                # 正常情况，执行裁剪
-                new_feat = nn.Parameter(feat[valid_points_mask].requires_grad_(True))
-                self._anchor_feat_dict[key] = new_feat
-                
-                # 同步更新优化器中的参数（如果优化器存在且 key 不是 (0, 0)）
-                if self.optimizer is not None and key != (0, 0):
-                    param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
-                    for group in self.optimizer.param_groups:
-                        if group["name"] == param_name:
-                            stored_state = self.optimizer.state.get(group['params'][0], None)
-                            if stored_state is not None:
-                                # 检查优化器状态形状是否匹配
-                                if "exp_avg" in stored_state and stored_state["exp_avg"].shape[0] == mask.shape[0]:
-                                    # 裁剪优化器状态
-                                    stored_state["exp_avg"] = stored_state["exp_avg"][valid_points_mask]
-                                    stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][valid_points_mask]
-                                    del self.optimizer.state[group['params'][0]]
-                                    group["params"][0] = new_feat
-                                    self.optimizer.state[group['params'][0]] = stored_state
-                                else:
-                                    # 形状不匹配，重新初始化优化器状态
-                                    print(f"Warning: Optimizer state for {param_name} shape mismatch, resetting state")
-                                    del self.optimizer.state[group['params'][0]]
-                                    group["params"][0] = new_feat
-                            else:
-                                group["params"][0] = new_feat
-                            break
-            elif feat.shape[0] == target_num_anchors:
-                # 特征长度已经与新 anchor 数量一致，无需裁剪
-                pass
-            else:
-                # 长度不匹配，使用 _anchor_feat 同步
-                print(f"Warning: anchor_feat_dict[{key}] length {feat.shape[0]} does not match mask length {mask.shape[0]}, syncing from _anchor_feat")
-                # 使用 _anchor_feat 裁剪后的结果
-                self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
+            if key == (0, 0):
+                continue
+            # 直接使用 _anchor_feat 克隆，保持同步
+            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
+            # 重置优化器状态
+            if self.optimizer is not None:
+                param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
+                for group in self.optimizer.param_groups:
+                    if group["name"] == param_name:
+                        if group['params'][0] in self.optimizer.state:
+                            del self.optimizer.state[group['params'][0]]
+                        group["params"][0] = self._anchor_feat_dict[key]
+                        break
         
         # ====================== 【新增】同步剪枝训练统计量 ======================
         # 检查统计量是否已初始化且长度匹配
@@ -1438,61 +1409,24 @@ class GaussianModel:
                     new_region = torch.full((new_anchor.shape[0],), current_region, dtype=torch.float, device='cuda')
                     self._region = torch.cat([self._region, new_region], dim=0)
                 
-                # ====================== 【重要】更新 _anchor_feat_dict[(0, 0)] ======================
-                # 因为 _anchor_feat 已经被更新，需要同步更新字典中的 (0, 0)
+                # ====================== 【重要】同步所有 (region, moment) 特征 ======================
+                # 所有特征都应该与 _anchor_feat 保持同步
                 self._anchor_feat_dict[(0, 0)] = self._anchor_feat
                 
-                # ====================== 【新增】同步扩展多(region, moment)组合的特征 ======================
-                # 为字典中存储的所有特征扩展新 anchor，使用默认值或复制方式填充
-                num_new = new_anchor.shape[0]
-                target_num_anchors = self._anchor.shape[0]  # 目标 anchor 数量
-                
+                # 直接同步所有其他 key 的特征
                 for key in list(self._anchor_feat_dict.keys()):
-                    # 跳过 (0, 0)，因为它就是 _anchor_feat，已经在上面处理过了
                     if key == (0, 0):
                         continue
-                    
-                    original_feat = self._anchor_feat_dict[key]
-                    
-                    # 检查特征形状是否与目标一致
-                    if original_feat.shape[0] != target_num_anchors - num_new:
-                        # 形状不一致，需要先同步到正确的形状
-                        print(f"Warning: anchor_feat_dict[{key}] shape {original_feat.shape[0]} != expected {target_num_anchors - num_new}, syncing before growing")
-                        # 使用 (0, 0) 的特征作为模板
-                        if self._anchor_feat.shape[0] == target_num_anchors - num_new:
-                            original_feat = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
-                            self._anchor_feat_dict[key] = original_feat
-                        else:
-                            continue  # 跳过这个 key
-                    
-                    if num_new > 0:
-                        # 为新 anchor 填充特征
-                        fill_feat = torch.zeros((num_new, self.feat_dim), dtype=torch.float, device='cuda')
-                        if original_feat.shape[0] > 0:
-                            fill_feat = original_feat[0:1].repeat(num_new, 1)
-                        new_feat = nn.Parameter(torch.cat([original_feat, fill_feat], dim=0).requires_grad_(True))
-                        self._anchor_feat_dict[key] = new_feat
-                        
-                        # 更新优化器中的参数
+                    # 直接使用 _anchor_feat 克隆，保持同步
+                    self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
+                    # 重置优化器状态
+                    if self.optimizer is not None:
                         param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
                         for group in self.optimizer.param_groups:
                             if group["name"] == param_name:
-                                stored_state = self.optimizer.state.get(group['params'][0], None)
-                                if stored_state is not None:
-                                    # 检查优化器状态形状是否匹配
-                                    if "exp_avg" in stored_state and stored_state["exp_avg"].shape[0] == original_feat.shape[0]:
-                                        # 扩展优化器状态
-                                        stored_state["exp_avg"] = torch.cat([stored_state["exp_avg"], torch.zeros_like(fill_feat)], dim=0)
-                                        stored_state["exp_avg_sq"] = torch.cat([stored_state["exp_avg_sq"], torch.zeros_like(fill_feat)], dim=0)
-                                        del self.optimizer.state[group['params'][0]]
-                                        group["params"][0] = new_feat
-                                        self.optimizer.state[group['params'][0]] = stored_state
-                                    else:
-                                        # 形状不匹配，重置优化器状态
-                                        del self.optimizer.state[group['params'][0]]
-                                        group["params"][0] = new_feat
-                                else:
-                                    group["params"][0] = new_feat
+                                if group['params'][0] in self.optimizer.state:
+                                    del self.optimizer.state[group['params'][0]]
+                                group["params"][0] = self._anchor_feat_dict[key]
                                 break
 
     def adjust_anchor(self, iteration, check_interval=100, success_threshold=0.8, grad_threshold=0.0002, update_ratio=0.5, extra_ratio=4.0, extra_up=0.25, min_opacity=0.005):
