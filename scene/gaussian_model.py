@@ -1200,23 +1200,28 @@ class GaussianModel:
         self._region = self._region[valid_points_mask]
         
         # ====================== 【重要】同步所有 (region, moment) 特征 ======================
-        # 所有特征都应该与 _anchor_feat 保持同步
         self._anchor_feat_dict[(0, 0)] = self._anchor_feat
         
-        # 直接同步所有其他 key 的特征
+        # 直接裁剪所有其他 key 的特征
         for key in list(self._anchor_feat_dict.keys()):
             if key == (0, 0):
                 continue
-            # 直接使用 _anchor_feat 克隆，保持同步
-            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
-            # 重置优化器状态
+            # 直接裁剪
+            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat_dict[key][valid_points_mask].requires_grad_(True))
+            # 更新优化器
             if self.optimizer is not None:
                 param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
                 for group in self.optimizer.param_groups:
                     if group["name"] == param_name:
-                        if group['params'][0] in self.optimizer.state:
+                        stored_state = self.optimizer.state.get(group['params'][0], None)
+                        if stored_state is not None and "exp_avg" in stored_state:
+                            stored_state["exp_avg"] = stored_state["exp_avg"][valid_points_mask]
+                            stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][valid_points_mask]
                             del self.optimizer.state[group['params'][0]]
-                        group["params"][0] = self._anchor_feat_dict[key]
+                            group["params"][0] = self._anchor_feat_dict[key]
+                            self.optimizer.state[group['params'][0]] = stored_state
+                        else:
+                            group["params"][0] = self._anchor_feat_dict[key]
                         break
         
         # ====================== 【新增】同步剪枝训练统计量 ======================
@@ -1410,23 +1415,32 @@ class GaussianModel:
                     self._region = torch.cat([self._region, new_region], dim=0)
                 
                 # ====================== 【重要】同步所有 (region, moment) 特征 ======================
-                # 所有特征都应该与 _anchor_feat 保持同步
                 self._anchor_feat_dict[(0, 0)] = self._anchor_feat
                 
-                # 直接同步所有其他 key 的特征
+                num_new = new_anchor.shape[0]
+                
+                # 直接扩展所有其他 key 的特征
                 for key in list(self._anchor_feat_dict.keys()):
                     if key == (0, 0):
                         continue
-                    # 直接使用 _anchor_feat 克隆，保持同步
-                    self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat.clone().detach().requires_grad_(True))
-                    # 重置优化器状态
+                    original_feat = self._anchor_feat_dict[key]
+                    # 直接扩展
+                    fill_feat = original_feat[0:1].repeat(num_new, 1)
+                    self._anchor_feat_dict[key] = nn.Parameter(torch.cat([original_feat, fill_feat], dim=0).requires_grad_(True))
+                    # 更新优化器
                     if self.optimizer is not None:
                         param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
                         for group in self.optimizer.param_groups:
                             if group["name"] == param_name:
-                                if group['params'][0] in self.optimizer.state:
+                                stored_state = self.optimizer.state.get(group['params'][0], None)
+                                if stored_state is not None and "exp_avg" in stored_state:
+                                    stored_state["exp_avg"] = torch.cat([stored_state["exp_avg"], torch.zeros_like(fill_feat)], dim=0)
+                                    stored_state["exp_avg_sq"] = torch.cat([stored_state["exp_avg_sq"], torch.zeros_like(fill_feat)], dim=0)
                                     del self.optimizer.state[group['params'][0]]
-                                group["params"][0] = self._anchor_feat_dict[key]
+                                    group["params"][0] = self._anchor_feat_dict[key]
+                                    self.optimizer.state[group['params'][0]] = stored_state
+                                else:
+                                    group["params"][0] = self._anchor_feat_dict[key]
                                 break
 
     def adjust_anchor(self, iteration, check_interval=100, success_threshold=0.8, grad_threshold=0.0002, update_ratio=0.5, extra_ratio=4.0, extra_up=0.25, min_opacity=0.005):
