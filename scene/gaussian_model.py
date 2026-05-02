@@ -30,6 +30,123 @@ import math
 # ====================== 新增：引入分区训练依赖 ======================
 from shapely.geometry import Polygon, Point
 # =====================================================================
+
+class AnchorFeatureManager:
+    """
+    特征管理器，支持按 (region, moment) 存储和获取不同的 anchor 特征
+    解决不同区域高斯球数量不同的问题
+    """
+    def __init__(self, feat_dim=32, device='cuda'):
+        self.feat_dim = feat_dim
+        self.device = device
+        self._features = {}  # {(region, moment): feature_tensor}
+        self._gaussian_regions = None  # 每个高斯球对应的 region [num_gaussians]
+
+    def set_gaussian_regions(self, region_tensor):
+        """设置每个高斯球对应的 region"""
+        self._gaussian_regions = region_tensor
+
+    def get_or_create(self, region, moment, template_feat=None, num_gaussians=None):
+        """
+        获取或创建指定 (region, moment) 的特征
+        Args:
+            region: 相机的 region
+            moment: 相机的 moment
+            template_feat: 模板特征（可选）
+            num_gaussians: 高斯球数量（可选，用于创建新特征时）
+        """
+        key = (region, moment)
+        if key not in self._features:
+            if template_feat is not None:
+                new_feat = nn.Parameter(template_feat.clone().detach().requires_grad_(True))
+            elif num_gaussians is not None:
+                new_feat = nn.Parameter(torch.zeros(num_gaussians, self.feat_dim, device=self.device).requires_grad_(True))
+            else:
+                raise ValueError("Must provide template_feat or num_gaussians when creating new feature")
+            self._features[key] = new_feat
+        return self._features[key]
+
+    def get_for_camera(self, camera_region, camera_moment, visible_mask=None):
+        """
+        获取相机视角下的特征，考虑高斯球的 region 属性
+        Args:
+            camera_region: 相机的 region
+            camera_moment: 相机的 moment
+            visible_mask: 可见性 mask（可选）
+        Returns:
+            特征张量，形状与当前高斯球一致
+        """
+        key = (camera_region, camera_moment)
+        if key not in self._features:
+            # 如果没有这个键，使用 (0, 0) 作为默认
+            key = (0, 0)
+        
+        feat = self._features[key]
+        
+        if visible_mask is not None:
+            feat = feat[visible_mask]
+        
+        return feat
+
+    def prune_features(self, valid_mask):
+        """剪枝所有特征"""
+        for key in self._features:
+            self._features[key] = nn.Parameter(self._features[key][valid_mask].requires_grad_(True))
+        if self._gaussian_regions is not None:
+            self._gaussian_regions = self._gaussian_regions[valid_mask]
+
+    def extend_features(self, extension_feat):
+        """扩展所有特征"""
+        for key in self._features:
+            self._features[key] = nn.Parameter(torch.cat([self._features[key], extension_feat], dim=0).requires_grad_(True))
+        if self._gaussian_regions is not None:
+            # 新高斯球继承最后一个区域
+            last_region = self._gaussian_regions[-1:] if len(self._gaussian_regions) > 0 else torch.tensor([0], device=self.device)
+            new_regions = last_region.repeat(extension_feat.shape[0])
+            self._gaussian_regions = torch.cat([self._gaussian_regions, new_regions], dim=0)
+
+    def save(self, path):
+        """保存特征到文件"""
+        save_dict = {
+            'features': {k: v.detach().cpu() for k, v in self._features.items()},
+            'gaussian_regions': self._gaussian_regions.detach().cpu() if self._gaussian_regions is not None else None
+        }
+        torch.save(save_dict, path)
+
+    def load(self, path):
+        """从文件加载特征"""
+        if os.path.exists(path):
+            save_dict = torch.load(path)
+            self._features = {k: nn.Parameter(v.to(self.device).requires_grad_(True)) for k, v in save_dict['features'].items()}
+            if save_dict['gaussian_regions'] is not None:
+                self._gaussian_regions = save_dict['gaussian_regions'].to(self.device)
+            return len(self._features)
+        return 0
+
+    def all_feature_names(self):
+        """获取所有特征的参数名列表"""
+        return [f"anchor_feat_r{r}_m{m}" for r, m in self._features.keys()]
+
+    def __getitem__(self, key):
+        return self._features[key]
+
+    def __setitem__(self, key, value):
+        self._features[key] = value
+
+    def __contains__(self, key):
+        return key in self._features
+
+    def keys(self):
+        return self._features.keys()
+
+    def values(self):
+        return self._features.values()
+
+    def items(self):
+        return self._features.items()
+
+    def __len__(self):
+        return len(self._features)
     
 class GaussianModel:
 
@@ -104,7 +221,7 @@ class GaussianModel:
         self._region = torch.empty(0)
         self._offset = torch.empty(0)
         self._anchor_feat = torch.empty(0)
-        self._anchor_feat_dict = {}  # 新增：字典存储不同(region, moment)组合的特征 {(region, moment): [num_gaussians, feat_dim]}
+        self._feat_manager = AnchorFeatureManager(feat_dim=feat_dim)  # 新增：使用新的特征管理器
         self.opacity_accum = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
