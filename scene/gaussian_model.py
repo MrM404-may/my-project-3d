@@ -104,6 +104,7 @@ class GaussianModel:
         self._region = torch.empty(0)
         self._offset = torch.empty(0)
         self._anchor_feat = torch.empty(0)
+        self._anchor_feat_by_moment = {}  # 新增：字典存储不同时刻的特征 {moment: [num_gaussians, feat_dim]}
         self.opacity_accum = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
@@ -262,6 +263,27 @@ class GaussianModel:
     @property
     def get_anchor_feat(self):
         return self._anchor_feat
+    
+    def get_anchor_feat_at_moment(self, moment=None):
+        """
+        获取指定时刻的 anchor 特征
+        Args:
+            moment: 时刻标识，如果为 None 则返回默认 _anchor_feat
+        Returns:
+            对应时刻的特征张量 [num_gaussians, feat_dim]
+        """
+        if moment is None or moment not in self._anchor_feat_by_moment:
+            return self._anchor_feat
+        return self._anchor_feat_by_moment[moment]
+    
+    def set_anchor_feat_at_moment(self, moment, feat):
+        """
+        设置指定时刻的 anchor 特征
+        Args:
+            moment: 时刻标识
+            feat: 特征张量 [num_gaussians, feat_dim]
+        """
+        self._anchor_feat_by_moment[moment] = feat
     
     def get_opacity_mlp(self, region=0):
         return self.mlp_opacity[region]   
@@ -466,6 +488,9 @@ class GaussianModel:
                 {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
                 {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             ]
+            # 添加字典中存储的所有时刻的特征
+            for moment, feat in self._anchor_feat_by_moment.items():
+                l.append({'params': [feat], 'lr': training_args.feature_lr, "name": f"anchor_feat_{moment}"})
         
         # 无论是否冻结，统一且仅添加一次 MLP / Embedding 参数
         for i in range(self.num_regions):

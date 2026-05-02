@@ -128,7 +128,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
         gaussians.set_anchor_mask(view.camera_center, iteration, view.resolution_scale)
         voxel_visible_mask = prefilter_voxel(view, gaussians, pipeline, background)
-        render_pkg = render(view, gaussians, pipeline, background, visible_mask=voxel_visible_mask, ape_code=idx, camera_region=camera_region)
+        # 【新增】渲染时使用相机 uid 作为时刻
+        render_moment = view.uid
+        render_pkg = render(view, gaussians, pipeline, background, visible_mask=voxel_visible_mask, ape_code=idx, camera_region=camera_region, moment=render_moment)
         
         torch.cuda.synchronize(); t1 = time.time()
         t_list.append(t1-t0)
@@ -158,7 +160,8 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             for cur_level in range(gaussians.levels):
                 gaussians.set_anchor_mask_perlevel(view.camera_center, view.resolution_scale, cur_level)
                 voxel_visible_mask = prefilter_voxel(view, gaussians, pipeline, background)
-                render_pkg = render(view, gaussians, pipeline, background, visible_mask=voxel_visible_mask, ape_code=ape_code, camera_region=camera_region)
+                # 【新增】level 渲染时也使用相机 uid 作为时刻
+                render_pkg = render(view, gaussians, pipeline, background, visible_mask=voxel_visible_mask, ape_code=ape_code, camera_region=camera_region, moment=render_moment)
                 
                 rendering = render_pkg["render"]
                 visible_count = render_pkg["visibility_filter"].sum()
