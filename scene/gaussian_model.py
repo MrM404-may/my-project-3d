@@ -118,114 +118,211 @@ class TrainingAnchorFeatManager:
 class RenderingAnchorFeatStorage:
     """
     渲染用的特征存储类
-    键：(region, moment) -> {anchor_idx: feat} 或更高效的方式
-    这里我们使用更高效的结构：{(region, moment): {
-        'feats': Tensor[N_total, feat_dim], 
-        'region_info': {region_id: {'start': int, 'end': int}}
-    }}
-    这样当合并多个区域时，我们可以按区域的anchor索引范围来组织特征
+    键格式：(区域, 时间, 高斯位置) -> 特征张量
+    这里的"高斯位置"可以是：
+        - 高斯在全局合并后的索引（整数）
+        - 或者高斯的唯一标识符
+    
+    存储结构设计：
+        - 第一层：{(region, moment): {anchor_pos: feat}}
+        - 这样在已知 region 和 moment 的情况下，可以快速访问该条件下的所有特征
     """
     def __init__(self, feat_dim: int, device='cuda'):
         self.feat_dim = feat_dim
         self.device = device
-        # 结构：{(region, moment): {'feats': Tensor, 'region_map': {region_id: (start, end)}}}
+        # 存储结构：{(region, moment): {anchor_pos: feat_tensor}}
         self._storage = {}
+        # 辅助结构：用于快速获取某个(region, moment)下的所有anchor位置和对应特征的张量形式
+        self._tensor_cache = {}  # {(region, moment): {'poses': Tensor, 'feats': Tensor}}
     
-    def add_region_features(self, region: int, moment: int, region_id: int, 
-                           feats: torch.Tensor, current_global_count: int):
+    def add_feature(self, region: int, moment: int, anchor_pos, feat: torch.Tensor):
         """
-        添加某个区域的特征（用于合并多个区域时）
-        Args:
-            region: 区域标识（字典键的一部分）
-            moment: 时刻标识（字典键的一部分）
-            region_id: 具体区域的ID（用于索引映射）
-            feats: 该区域的特征 [N_region, feat_dim]
-            current_global_count: 当前全局anchor的数量（用于计算位置）
-        Returns:
-            更新后的全局anchor数量
-        """
-        key = (region, moment)
-        
-        if key not in self._storage:
-            self._storage[key] = {
-                'feats': torch.empty(0, self.feat_dim, device=self.device),
-                'region_map': {}  # {region_id: (start_idx, end_idx)}
-            }
-        
-        storage_entry = self._storage[key]
-        start_idx = current_global_count
-        end_idx = start_idx + feats.shape[0]
-        
-        # 拼接特征
-        storage_entry['feats'] = torch.cat([storage_entry['feats'], feats], dim=0)
-        # 记录该区域的索引范围
-        storage_entry['region_map'][region_id] = (start_idx, end_idx)
-        
-        return end_idx
-    
-    def get(self, region: int, moment: int, anchor_indices: torch.Tensor = None):
-        """
-        获取指定(region, moment)的特征
+        添加单个高斯的特征
         Args:
             region: 区域标识
             moment: 时刻标识
-            anchor_indices: 需要获取的anchor索引，如果为None则返回所有
+            anchor_pos: 高斯位置/索引/唯一标识符
+            feat: 特征张量 [feat_dim]
+        """
+        key = (region, moment)
+        if key not in self._storage:
+            self._storage[key] = {}
+        self._storage[key][anchor_pos] = feat
+        
+        # 清除缓存，因为数据更新了
+        if key in self._tensor_cache:
+            del self._tensor_cache[key]
+    
+    def add_region_features_batch(self, region: int, moment: int, 
+                                   anchor_poses: list, feats: torch.Tensor):
+        """
+        批量添加某个区域的特征
+        Args:
+            region: 区域标识
+            moment: 时刻标识
+            anchor_poses: 高斯位置列表 [N]
+            feats: 特征张量 [N, feat_dim]
+        """
+        key = (region, moment)
+        if key not in self._storage:
+            self._storage[key] = {}
+        
+        for i, pos in enumerate(anchor_poses):
+            self._storage[key][pos] = feats[i]
+        
+        # 清除缓存
+        if key in self._tensor_cache:
+            del self._tensor_cache[key]
+    
+    def merge_multi_region_features(self, region_data_dict: dict):
+        """
+        合并多个区域的特征
+        Args:
+            region_data_dict: {region_id: {
+                'anchor_feat_dict': {(r, m): feats_tensor},  # 该区域内的特征字典
+                'anchor_positions': list or Tensor,          # 该区域内高斯的位置标识符
+            }}
+        """
+        for region_id, region_data in region_data_dict.items():
+            feat_dict = region_data.get('anchor_feat_dict', {})
+            anchor_positions = region_data.get('anchor_positions', None)
+            
+            for (r, m), feats in feat_dict.items():
+                num_anchors = feats.shape[0]
+                
+                if anchor_positions is None:
+                    # 如果没有提供位置标识，使用全局递增索引
+                    # 首先确定当前(region, moment)下已有多少个anchor
+                    current_count = len(self._storage.get((r, m), {}))
+                    # 生成位置标识
+                    poses = list(range(current_count, current_count + num_anchors))
+                elif isinstance(anchor_positions, torch.Tensor):
+                    poses = anchor_positions.tolist()
+                else:
+                    poses = anchor_positions
+                
+                # 批量添加
+                self.add_region_features_batch(r, m, poses, feats)
+        
+        print(f"RenderingAnchorFeatStorage: Merged features from {len(region_data_dict)} regions")
+    
+    def get(self, region: int, moment: int, anchor_pos=None):
+        """
+        获取特征
+        Args:
+            region: 区域标识
+            moment: 时刻标识
+            anchor_pos: 高斯位置，如果为None则返回该(region, moment)下的所有特征
         Returns:
-            特征张量
+            如果 anchor_pos 为None: {anchor_pos: feat} 字典
+            否则: 单个特征张量 [feat_dim]
         """
         key = (region, moment)
         if key not in self._storage:
             raise KeyError(f"Features for (region={region}, moment={moment}) not found")
         
-        feats = self._storage[key]['feats']
-        
-        if anchor_indices is None:
-            return feats
+        if anchor_pos is None:
+            return self._storage[key]
         else:
-            return feats[anchor_indices]
+            if anchor_pos not in self._storage[key]:
+                raise KeyError(f"Feature for (region={region}, moment={moment}, pos={anchor_pos}) not found")
+            return self._storage[key][anchor_pos]
     
-    def get_by_region_moment_and_pos(self, region: int, moment: int, 
-                                      anchor_region_ids: torch.Tensor, 
-                                      anchor_positions: torch.Tensor):
+    def get_batch(self, region: int, moment: int, anchor_poses: list):
         """
-        通过区域ID和位置获取特征（合并多区域后的使用场景）
-        这个方法可以根据需要实现具体的匹配逻辑
+        批量获取特征
+        Args:
+            region: 区域标识
+            moment: 时刻标识
+            anchor_poses: 高斯位置列表 [N]
+        Returns:
+            特征张量 [N, feat_dim]
+        """
+        key = (region, moment)
+        if key not in self._storage:
+            raise KeyError(f"Features for (region={region}, moment={moment}) not found")
         
-        目前简化版本：假设我们已经通过add_region_features建立了索引映射，
-                     直接通过anchor索引获取
+        # 检查是否有缓存的张量形式，如果有且匹配则直接使用
+        if key in self._tensor_cache:
+            # 这里可以根据具体需求做更复杂的缓存匹配检查
+            pass
+        else:
+            # 构建张量缓存
+            poses_list = list(self._storage[key].keys())
+            feats_list = [self._storage[key][pos] for pos in poses_list]
+            self._tensor_cache[key] = {
+                'poses': poses_list,
+                'feats': torch.stack(feats_list, dim=0)
+            }
+        
+        # 创建位置到索引的映射
+        pos_to_idx = {pos: i for i, pos in enumerate(self._tensor_cache[key]['poses'])}
+        # 获取所需的索引
+        indices = [pos_to_idx[pos] for pos in anchor_poses]
+        
+        return self._tensor_cache[key]['feats'][indices]
+    
+    def get_by_triple_key(self, region: int, moment: int, anchor_pos):
         """
-        return self.get(region, moment, anchor_positions)
+        通过完整的三元键 (区域, 时间, 高斯位置) 获取特征
+        """
+        return self.get(region, moment, anchor_pos)
     
     def keys(self):
+        """获取所有 (region, moment) 键"""
         return self._storage.keys()
     
+    def get_all_triple_keys(self):
+        """获取所有完整的三元键 (region, moment, anchor_pos)"""
+        triple_keys = []
+        for (r, m), feat_dict in self._storage.items():
+            for pos in feat_dict.keys():
+                triple_keys.append((r, m, pos))
+        return triple_keys
+    
     def __len__(self):
-        return len(self._storage)
+        """返回所有特征的总数"""
+        total = 0
+        for feat_dict in self._storage.values():
+            total += len(feat_dict)
+        return total
     
     def __contains__(self, key):
-        return key in self._storage
+        """
+        检查键是否存在
+        key可以是：
+            - (region, moment) 二元组
+            - (region, moment, anchor_pos) 三元组
+        """
+        if len(key) == 2:
+            return key in self._storage
+        elif len(key) == 3:
+            r, m, pos = key
+            return (r, m) in self._storage and pos in self._storage[(r, m)]
+        return False
     
     def save(self, path: str):
         """保存特征存储"""
-        save_data = {}
-        for key, entry in self._storage.items():
-            save_data[key] = {
-                'feats': entry['feats'].detach().cpu(),
-                'region_map': entry['region_map']
-            }
+        save_data = {
+            'storage': self._storage,
+            'feat_dim': self.feat_dim
+        }
         torch.save(save_data, path)
-        print(f"RenderingAnchorFeatStorage: Saved {len(save_data)} entries to {path}")
+        print(f"RenderingAnchorFeatStorage: Saved storage to {path}")
     
     def load(self, path: str, device='cuda'):
         """加载特征存储"""
         if os.path.exists(path):
             load_data = torch.load(path)
-            for key, entry in load_data.items():
-                self._storage[key] = {
-                    'feats': entry['feats'].to(device),
-                    'region_map': entry['region_map']
-                }
-            print(f"RenderingAnchorFeatStorage: Loaded {len(load_data)} entries from {path}")
+            if 'storage' in load_data:
+                self._storage = load_data['storage']
+                if 'feat_dim' in load_data:
+                    self.feat_dim = load_data['feat_dim']
+                # 清除缓存
+                self._tensor_cache = {}
+                print(f"RenderingAnchorFeatStorage: Loaded storage from {path}")
+        else:
+            print(f"RenderingAnchorFeatStorage: Storage file not found at {path}")
 
 # =====================================================================
 from datetime import timedelta
@@ -565,22 +662,13 @@ class GaussianModel:
         """
         合并多个区域的特征到渲染存储中（用于渲染时）
         Args:
-            region_feature_dict: {region_id: {(region, moment): feats_tensor}}
-                或者更简单的结构，根据实际情况调整
-        这里我们假设一个简化的输入结构：
-            {region_id: {'anchor_feat_dict': {(r, m): feats}, 'num_anchors': N}}
+            region_feature_dict: {region_id: {
+                'anchor_feat_dict': {(r, m): feats_tensor},
+                'anchor_positions': list or Tensor (可选)
+            }}
         """
         self.rendering_feat_storage = RenderingAnchorFeatStorage(self.feat_dim, device='cuda')
-        current_global_count = 0
-        
-        for region_id, region_data in region_feature_dict.items():
-            feat_dict = region_data.get('anchor_feat_dict', {})
-            for (r, m), feats in feat_dict.items():
-                current_global_count = self.rendering_feat_storage.add_region_features(
-                    r, m, region_id, feats, current_global_count
-                )
-        
-        print(f"merge_multi_region_features: Merged features from {len(region_feature_dict)} regions")
+        self.rendering_feat_storage.merge_multi_region_features(region_feature_dict)
     
     def get_anchor_feat_for_render(self, region: int, moment: int, anchor_indices: torch.Tensor = None):
         """
@@ -590,7 +678,19 @@ class GaussianModel:
         # 检查是否有渲染存储
         if len(self.rendering_feat_storage) > 0:
             try:
-                return self.rendering_feat_storage.get(region, moment, anchor_indices)
+                if anchor_indices is not None:
+                    # 批量获取
+                    if isinstance(anchor_indices, torch.Tensor):
+                        poses = anchor_indices.tolist()
+                    else:
+                        poses = anchor_indices
+                    return self.rendering_feat_storage.get_batch(region, moment, poses)
+                else:
+                    # 获取所有
+                    feat_dict = self.rendering_feat_storage.get(region, moment)
+                    # 转换为张量形式
+                    feats_list = list(feat_dict.values())
+                    return torch.stack(feats_list, dim=0)
             except KeyError:
                 pass
         
@@ -614,9 +714,11 @@ class GaussianModel:
             
             if os.path.exists(moments_path):
                 region_data = torch.load(moments_path)
+                # 对于每个区域，我们使用region_id作为anchor位置的前缀
+                # 或者可以加载该区域的ply文件来获取anchor的唯一标识
                 region_feature_dict[i] = {
-                    'anchor_feat_dict': region_data,
-                    'num_anchors': len(next(iter(region_data.values()))) if region_data else 0
+                    'anchor_feat_dict': region_data
+                    # 'anchor_positions': 可以根据需要从ply文件加载
                 }
                 print(f"load_region_features_for_render: Loaded features from region {i} at {path}")
         
