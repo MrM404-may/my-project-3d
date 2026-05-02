@@ -612,6 +612,15 @@ class GaussianModel:
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
+        
+        # 保存多时刻特征到单独的 .pt 文件
+        if self._anchor_feat_by_moment:
+            moment_feat_path = path.replace('.ply', '_moments.pt')
+            moment_data = {}
+            for moment, feat in self._anchor_feat_by_moment.items():
+                moment_data[moment] = feat.detach().cpu()
+            torch.save(moment_data, moment_feat_path)
+            print(f"Saved {len(moment_data)} moment features to {moment_feat_path}")
 
     def plot_levels(self):
         for level in range(self.levels):
@@ -673,6 +682,14 @@ class GaussianModel:
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(False))
         self._anchor_mask = torch.ones(self._anchor.shape[0], dtype=torch.bool, device="cuda")
         self.levels = torch.max(self._level) - torch.min(self._level) + 1
+        
+        # 加载多时刻特征
+        moment_feat_path = path.replace('.ply', '_moments.pt')
+        if os.path.exists(moment_feat_path):
+            moment_data = torch.load(moment_feat_path)
+            for moment, feat_cpu in moment_data.items():
+                self._anchor_feat_by_moment[moment] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
+            print(f"Loaded {len(self._anchor_feat_by_moment)} moment features from {moment_feat_path}")
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -1446,6 +1463,9 @@ class GaussianModel:
                 param_dict['appearance'] = [emb.state_dict() for emb in self.embedding_appearance]
             if self.use_feat_bank:
                 param_dict['feature_bank_mlp'] = self.mlp_feature_bank.state_dict()
+            # 保存多时刻特征
+            if self._anchor_feat_by_moment:
+                param_dict['anchor_feat_by_moment'] = {moment: feat.detach().cpu() for moment, feat in self._anchor_feat_by_moment.items()}
             torch.save(param_dict, os.path.join(path, 'checkpoints.pth'))
         else:
             raise NotImplementedError
@@ -1494,6 +1514,11 @@ class GaussianModel:
             if self.appearance_dim > 0 and 'appearance' in checkpoint:
                 for i, state_dict in enumerate(checkpoint['appearance']):
                     self.embedding_appearance[i].load_state_dict(state_dict)
+            # 加载多时刻特征
+            if 'anchor_feat_by_moment' in checkpoint:
+                for moment, feat_cpu in checkpoint['anchor_feat_by_moment'].items():
+                    self._anchor_feat_by_moment[moment] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
+                print(f"Loaded {len(self._anchor_feat_by_moment)} moment features from checkpoint")
     
     def load_mlp_from_pt(self, path):
         """
