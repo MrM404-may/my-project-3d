@@ -266,7 +266,7 @@ class GaussianModel:
     
     def get_anchor_feat_at_moment(self, moment=None, region=None):
         """
-        获取指定 (region, moment) 的 anchor 特征
+        获取指定 (region, moment) 的 anchor 特征（向量化版本）
         Args:
             moment: 时刻标识，如果为 None 则使用默认 0
             region: 区域标识，如果为 None 则使用该 anchor 的 _region 属性
@@ -277,20 +277,59 @@ class GaussianModel:
         if N == 0:
             return self._anchor_feat
         
-        feat_dim = self._anchor_feat.shape[1]
-        result = torch.empty((N, feat_dim), dtype=self._anchor_feat.dtype, device=self._anchor_feat.device)
+        # 快速路径：如果没有自定义时刻特征，直接返回默认特征
+        if len(self._anchor_feat_dict) == 0 or all(len(d) == 0 for d in self._anchor_feat_dict):
+            return self._anchor_feat
         
-        for i in range(N):
-            if region is None:
-                r = self._region[i].item()
-            else:
-                r = region
-            key = (r, moment if moment is not None else 0)
-            if len(self._anchor_feat_dict) > i and key in self._anchor_feat_dict[i]:
-                result[i] = self._anchor_feat_dict[i][key]
-            else:
-                result[i] = self._anchor_feat[i]
-        return result
+        feat_dim = self._anchor_feat.shape[1]
+        m = moment if moment is not None else 0
+        
+        # 收集所有唯一的 (region, moment) 组合及其特征
+        unique_features = {}  # {(r, m): tensor[N_custom, feat_dim]}
+        anchor_indices = {}   # {(r, m): list of anchor indices}
+        
+        for i, feat_dict in enumerate(self._anchor_feat_dict):
+            if len(feat_dict) > 0:
+                for (r, m_idx), feat in feat_dict.items():
+                    key = (r, m_idx)
+                    if key not in unique_features:
+                        unique_features[key] = []
+                        anchor_indices[key] = []
+                    unique_features[key].append(feat)
+                    anchor_indices[key].append(i)
+        
+        # 如果请求的 (region, moment) 存在且有足够数据，使用向量化方式
+        target_key = (region, m) if region is not None else None
+        
+        if target_key is not None and target_key in unique_features:
+            # 构建结果张量，默认为 _anchor_feat
+            result = self._anchor_feat.clone()
+            
+            # 只对有自定义特征的 anchor 进行替换
+            indices = torch.tensor(anchor_indices[target_key], device=self._anchor_feat.device, dtype=torch.long)
+            stacked_feats = torch.stack(unique_features[target_key], dim=0)
+            result[indices] = stacked_feats
+            return result
+        elif target_key is None:
+            # region 为 None，需要为每个 anchor 使用自己的 region
+            # 检查是否有任何 (region, moment) 匹配
+            has_custom = any(m_idx == m for (r, m_idx) in unique_features.keys())
+            if not has_custom:
+                return self._anchor_feat
+            
+            # 构建结果
+            result = self._anchor_feat.clone()
+            
+            # 为每个唯一的 (r, m) 组合构建批量更新
+            for (r, m_idx), feats in unique_features.items():
+                if m_idx == m:
+                    indices = torch.tensor(anchor_indices[(r, m_idx)], device=self._anchor_feat.device, dtype=torch.long)
+                    stacked_feats = torch.stack(feats, dim=0)
+                    result[indices] = stacked_feats
+            return result
+        else:
+            # 请求的 (region, moment) 不存在
+            return self._anchor_feat
     
     def set_anchor_feat_at_moment(self, moment, region, anchor_idx, feat):
         """
