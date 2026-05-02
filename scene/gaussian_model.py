@@ -1188,13 +1188,35 @@ class GaussianModel:
         self._extra_level = self._extra_level[valid_points_mask]
         self._region = self._region[valid_points_mask]
         
+        # ====================== 【重要】更新 _anchor_feat_dict[(0, 0)] ======================
+        # 因为 _anchor_feat 已经被更新，需要同步更新字典中的 (0, 0)
+        self._anchor_feat_dict[(0, 0)] = self._anchor_feat
+        
         # ====================== 【新增】同步剪枝多(region, moment)组合的特征 ======================
         # 裁剪字典中存储的所有特征
         for key in list(self._anchor_feat_dict.keys()):
             feat = self._anchor_feat_dict[key]
             # 检查特征长度是否与 mask 匹配
             if feat.shape[0] == mask.shape[0]:
-                self._anchor_feat_dict[key] = nn.Parameter(feat[valid_points_mask].requires_grad_(True))
+                new_feat = nn.Parameter(feat[valid_points_mask].requires_grad_(True))
+                self._anchor_feat_dict[key] = new_feat
+                
+                # 同步更新优化器中的参数（如果优化器存在且 key 不是 (0, 0)）
+                if self.optimizer is not None and key != (0, 0):
+                    param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
+                    for group in self.optimizer.param_groups:
+                        if group["name"] == param_name:
+                            stored_state = self.optimizer.state.get(group['params'][0], None)
+                            if stored_state is not None:
+                                # 裁剪优化器状态
+                                stored_state["exp_avg"] = stored_state["exp_avg"][valid_points_mask]
+                                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][valid_points_mask]
+                                del self.optimizer.state[group['params'][0]]
+                                group["params"][0] = new_feat
+                                self.optimizer.state[group['params'][0]] = stored_state
+                            else:
+                                group["params"][0] = new_feat
+                            break
             elif feat.shape[0] == valid_points_mask.sum().item():
                 # 特征长度已经与新 anchor 数量一致，无需裁剪
                 pass
@@ -1391,6 +1413,11 @@ class GaussianModel:
                     # 为新锚点创建region属性
                     new_region = torch.full((new_anchor.shape[0],), current_region, dtype=torch.float, device='cuda')
                     self._region = torch.cat([self._region, new_region], dim=0)
+                
+                # ====================== 【重要】更新 _anchor_feat_dict[(0, 0)] ======================
+                # 因为 _anchor_feat 已经被更新，需要同步更新字典中的 (0, 0)
+                self._anchor_feat_dict[(0, 0)] = self._anchor_feat
+                
                 # ====================== 【新增】同步扩展多(region, moment)组合的特征 ======================
                 # 为字典中存储的所有特征扩展新 anchor，使用默认值或复制方式填充
                 num_new = new_anchor.shape[0]
