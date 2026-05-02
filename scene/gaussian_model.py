@@ -745,6 +745,9 @@ class GaussianModel:
                 'feat_base' in group['name'] or \
                 'embedding' in group['name']:
                 continue
+            # 跳过动态创建的 anchor_feat_r*_m* 参数，这些会在后面单独处理
+            if group['name'].startswith('anchor_feat_r') and '_m' in group['name']:
+                continue
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group['params'][0], None)
@@ -1373,16 +1376,33 @@ class GaussianModel:
                 # 为字典中存储的所有特征扩展新 anchor，使用默认值或复制方式填充
                 num_new = new_anchor.shape[0]
                 for key in self._anchor_feat_dict:
-                    # 复制特征最后一行，或者使用默认值填充
+                    # 跳过 (0, 0)，因为它就是 _anchor_feat，已经在上面处理过了
+                    if key == (0, 0):
+                        continue
                     original_feat = self._anchor_feat_dict[key]
                     if num_new > 0:
-                        # 为新 anchor 填充特征，这里我们使用 original_feat 的均值或零值
-                        # 也可以直接复制最后一行或第一行
+                        # 为新 anchor 填充特征
                         fill_feat = torch.zeros((num_new, self.feat_dim), dtype=torch.float, device='cuda')
-                        # 或者复制第一行作为初始值
                         if original_feat.shape[0] > 0:
                             fill_feat = original_feat[0:1].repeat(num_new, 1)
-                        self._anchor_feat_dict[key] = nn.Parameter(torch.cat([original_feat, fill_feat], dim=0).requires_grad_(True))
+                        new_feat = nn.Parameter(torch.cat([original_feat, fill_feat], dim=0).requires_grad_(True))
+                        self._anchor_feat_dict[key] = new_feat
+                        
+                        # 更新优化器中的参数
+                        param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
+                        for group in self.optimizer.param_groups:
+                            if group["name"] == param_name:
+                                stored_state = self.optimizer.state.get(group['params'][0], None)
+                                if stored_state is not None:
+                                    # 扩展优化器状态
+                                    stored_state["exp_avg"] = torch.cat([stored_state["exp_avg"], torch.zeros_like(fill_feat)], dim=0)
+                                    stored_state["exp_avg_sq"] = torch.cat([stored_state["exp_avg_sq"], torch.zeros_like(fill_feat)], dim=0)
+                                    del self.optimizer.state[group['params'][0]]
+                                    group["params"][0] = new_feat
+                                    self.optimizer.state[group['params'][0]] = stored_state
+                                else:
+                                    group["params"][0] = new_feat
+                                break
 
     def adjust_anchor(self, iteration, check_interval=100, success_threshold=0.8, grad_threshold=0.0002, update_ratio=0.5, extra_ratio=4.0, extra_up=0.25, min_opacity=0.005):
         """ 冻结模式：禁止调整高斯密度 """
