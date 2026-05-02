@@ -104,7 +104,7 @@ class GaussianModel:
         self._region = torch.empty(0)
         self._offset = torch.empty(0)
         self._anchor_feat = torch.empty(0)
-        self._anchor_feat_by_moment = {}  # 新增：字典存储不同时刻的特征 {moment: [num_gaussians, feat_dim]}
+        self._anchor_feat_dict = {}  # 新增：字典存储不同(region, moment)组合的特征 {(region, moment): [num_gaussians, feat_dim]}
         self.opacity_accum = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
@@ -264,26 +264,31 @@ class GaussianModel:
     def get_anchor_feat(self):
         return self._anchor_feat
     
-    def get_anchor_feat_at_moment(self, moment=None):
+    def get_anchor_feat_at_moment(self, region=None, moment=None):
         """
-        获取指定时刻的 anchor 特征
+        获取指定(region, moment)组合的 anchor 特征
         Args:
-            moment: 时刻标识，如果为 None 则返回默认 _anchor_feat
+            region: 区域标识，如果为 None 则使用默认
+            moment: 时刻标识，如果为 None 则使用默认
         Returns:
-            对应时刻的特征张量 [num_gaussians, feat_dim]
+            对应特征张量 [num_gaussians, feat_dim]
         """
-        if moment is None or moment not in self._anchor_feat_by_moment:
+        if region is None or moment is None:
             return self._anchor_feat
-        return self._anchor_feat_by_moment[moment]
+        key = (region, moment)
+        if key not in self._anchor_feat_dict:
+            return self._anchor_feat
+        return self._anchor_feat_dict[key]
     
-    def set_anchor_feat_at_moment(self, moment, feat):
+    def set_anchor_feat_at_moment(self, region, moment, feat):
         """
-        设置指定时刻的 anchor 特征
+        设置指定(region, moment)组合的 anchor 特征
         Args:
+            region: 区域标识
             moment: 时刻标识
             feat: 特征张量 [num_gaussians, feat_dim]
         """
-        self._anchor_feat_by_moment[moment] = feat
+        self._anchor_feat_dict[(region, moment)] = feat
     
     def get_opacity_mlp(self, region=0):
         return self.mlp_opacity[region]   
@@ -406,7 +411,7 @@ class GaussianModel:
         self._anchor = nn.Parameter(self.positions.requires_grad_(True))
         self._offset = nn.Parameter(offsets.requires_grad_(True))
         self._anchor_feat = nn.Parameter(anchors_feat.requires_grad_(True))
-        self._anchor_feat_by_moment[0] = self._anchor_feat  # 初始化时创建默认时刻 0 的特征
+        self._anchor_feat_dict[(0, 0)] = self._anchor_feat  # 初始化时创建默认 (region=0, moment=0) 的特征
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(False))
         self._opacity = nn.Parameter(opacities.requires_grad_(False))
@@ -489,10 +494,10 @@ class GaussianModel:
                 {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
                 {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             ]
-            # 添加字典中除时刻 0 外的所有时刻的特征（时刻 0 就是 _anchor_feat，已在上面添加）
-            for moment, feat in self._anchor_feat_by_moment.items():
-                if moment != 0:  # 跳过时刻 0，避免重复添加
-                    l.append({'params': [feat], 'lr': training_args.feature_lr, "name": f"anchor_feat_{moment}"})
+            # 添加字典中除 (region=0, moment=0) 外的所有(region, moment)组合的特征（已在上面添加）
+            for key, feat in self._anchor_feat_dict.items():
+                if key != (0, 0):  # 跳过 (0,0)，避免重复添加
+                    l.append({'params': [feat], 'lr': training_args.feature_lr, "name": f"anchor_feat_r{key[0]}_m{key[1]}"})
         
         # 无论是否冻结，统一且仅添加一次 MLP / Embedding 参数
         for i in range(self.num_regions):
@@ -615,14 +620,14 @@ class GaussianModel:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
         
-        # 保存多时刻特征到单独的 .pt 文件
-        if self._anchor_feat_by_moment:
+        # 保存多(region, moment)组合的特征到单独的 .pt 文件
+        if self._anchor_feat_dict:
             moment_feat_path = path.replace('.ply', '_moments.pt')
             moment_data = {}
-            for moment, feat in self._anchor_feat_by_moment.items():
-                moment_data[moment] = feat.detach().cpu()
+            for key, feat in self._anchor_feat_dict.items():
+                moment_data[key] = feat.detach().cpu()
             torch.save(moment_data, moment_feat_path)
-            print(f"Saved {len(moment_data)} moment features to {moment_feat_path}")
+            print(f"Saved {len(moment_data)} (region, moment) features to {moment_feat_path}")
 
     def plot_levels(self):
         for level in range(self.levels):
@@ -685,15 +690,15 @@ class GaussianModel:
         self._anchor_mask = torch.ones(self._anchor.shape[0], dtype=torch.bool, device="cuda")
         self.levels = torch.max(self._level) - torch.min(self._level) + 1
         
-        # 确保默认时刻 0 的特征存在
-        self._anchor_feat_by_moment[0] = self._anchor_feat
-        # 加载多时刻特征（如果存在）
+        # 确保默认 (region=0, moment=0) 的特征存在
+        self._anchor_feat_dict[(0, 0)] = self._anchor_feat
+        # 加载多(region, moment)组合的特征（如果存在）
         moment_feat_path = path.replace('.ply', '_moments.pt')
         if os.path.exists(moment_feat_path):
             moment_data = torch.load(moment_feat_path)
-            for moment, feat_cpu in moment_data.items():
-                self._anchor_feat_by_moment[moment] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
-            print(f"Loaded {len(self._anchor_feat_by_moment)} moment features from {moment_feat_path}")
+            for key, feat_cpu in moment_data.items():
+                self._anchor_feat_dict[key] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
+            print(f"Loaded {len(self._anchor_feat_dict)} (region, moment) features from {moment_feat_path}")
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -1149,6 +1154,11 @@ class GaussianModel:
         self._extra_level = self._extra_level[valid_points_mask]
         self._region = self._region[valid_points_mask]
         
+        # ====================== 【新增】同步剪枝多(region, moment)组合的特征 ======================
+        # 裁剪字典中存储的所有特征
+        for key in self._anchor_feat_dict:
+            self._anchor_feat_dict[key] = nn.Parameter(self._anchor_feat_dict[key][valid_points_mask].requires_grad_(True))
+        
         # ====================== 【新增】同步剪枝训练统计量 ======================
         # 检查统计量是否已初始化且长度匹配
         if hasattr(self, 'opacity_accum') and self.opacity_accum.numel() > 0:
@@ -1338,6 +1348,20 @@ class GaussianModel:
                     # 为新锚点创建region属性
                     new_region = torch.full((new_anchor.shape[0],), current_region, dtype=torch.float, device='cuda')
                     self._region = torch.cat([self._region, new_region], dim=0)
+                # ====================== 【新增】同步扩展多(region, moment)组合的特征 ======================
+                # 为字典中存储的所有特征扩展新 anchor，使用默认值或复制方式填充
+                num_new = new_anchor.shape[0]
+                for key in self._anchor_feat_dict:
+                    # 复制特征最后一行，或者使用默认值填充
+                    original_feat = self._anchor_feat_dict[key]
+                    if num_new > 0:
+                        # 为新 anchor 填充特征，这里我们使用 original_feat 的均值或零值
+                        # 也可以直接复制最后一行或第一行
+                        fill_feat = torch.zeros((num_new, self.feat_dim), dtype=torch.float, device='cuda')
+                        # 或者复制第一行作为初始值
+                        if original_feat.shape[0] > 0:
+                            fill_feat = original_feat[0:1].repeat(num_new, 1)
+                        self._anchor_feat_dict[key] = nn.Parameter(torch.cat([original_feat, fill_feat], dim=0).requires_grad_(True))
 
     def adjust_anchor(self, iteration, check_interval=100, success_threshold=0.8, grad_threshold=0.0002, update_ratio=0.5, extra_ratio=4.0, extra_up=0.25, min_opacity=0.005):
         """ 冻结模式：禁止调整高斯密度 """
@@ -1457,9 +1481,9 @@ class GaussianModel:
             if self.use_feat_bank:
                 feature_bank_mlp = torch.jit.trace(self.mlp_feature_bank, (torch.rand(1, 3+self.level_dim).cuda()))
                 feature_bank_mlp.save(os.path.join(path, 'feature_bank_mlp.pt'))
-            # 保存多时刻特征到单独文件
-            if self._anchor_feat_by_moment:
-                moment_data = {moment: feat.detach().cpu() for moment, feat in self._anchor_feat_by_moment.items()}
+            # 保存多(region, moment)组合的特征到单独文件
+            if self._anchor_feat_dict:
+                moment_data = {key: feat.detach().cpu() for key, feat in self._anchor_feat_dict.items()}
                 torch.save(moment_data, os.path.join(path, 'anchor_feat_moments.pt'))
             self.train()
         elif mode == 'unite':
@@ -1471,9 +1495,9 @@ class GaussianModel:
                 param_dict['appearance'] = [emb.state_dict() for emb in self.embedding_appearance]
             if self.use_feat_bank:
                 param_dict['feature_bank_mlp'] = self.mlp_feature_bank.state_dict()
-            # 保存多时刻特征
-            if self._anchor_feat_by_moment:
-                param_dict['anchor_feat_by_moment'] = {moment: feat.detach().cpu() for moment, feat in self._anchor_feat_by_moment.items()}
+            # 保存多(region, moment)组合的特征
+            if self._anchor_feat_dict:
+                param_dict['anchor_feat_dict'] = {key: feat.detach().cpu() for key, feat in self._anchor_feat_dict.items()}
             torch.save(param_dict, os.path.join(path, 'checkpoints.pth'))
         else:
             raise NotImplementedError
@@ -1511,13 +1535,13 @@ class GaussianModel:
             # 加载其他不变的MLP
             if self.use_feat_bank:
                 self.mlp_feature_bank = torch.jit.load(os.path.join(path, 'feature_bank_mlp.pt')).cuda()
-            # 加载多时刻特征
+            # 加载多(region, moment)组合的特征
             moments_path = os.path.join(path, 'anchor_feat_moments.pt')
             if os.path.exists(moments_path):
                 moment_data = torch.load(moments_path)
-                for moment, feat_cpu in moment_data.items():
-                    self._anchor_feat_by_moment[moment] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
-                print(f"Loaded {len(self._anchor_feat_by_moment)} moment features from {moments_path}")
+                for key, feat_cpu in moment_data.items():
+                    self._anchor_feat_dict[key] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
+                print(f"Loaded {len(self._anchor_feat_dict)} (region, moment) features from {moments_path}")
         elif mode == 'unite':
             checkpoint = torch.load(os.path.join(path, 'checkpoints.pth'))
             for i, state_dict in enumerate(checkpoint['opacity_mlp']):
@@ -1529,11 +1553,11 @@ class GaussianModel:
             if self.appearance_dim > 0 and 'appearance' in checkpoint:
                 for i, state_dict in enumerate(checkpoint['appearance']):
                     self.embedding_appearance[i].load_state_dict(state_dict)
-            # 加载多时刻特征
-            if 'anchor_feat_by_moment' in checkpoint:
-                for moment, feat_cpu in checkpoint['anchor_feat_by_moment'].items():
-                    self._anchor_feat_by_moment[moment] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
-                print(f"Loaded {len(self._anchor_feat_by_moment)} moment features from checkpoint")
+            # 加载多(region, moment)组合的特征
+            if 'anchor_feat_dict' in checkpoint:
+                for key, feat_cpu in checkpoint['anchor_feat_dict'].items():
+                    self._anchor_feat_dict[key] = nn.Parameter(feat_cpu.cuda().requires_grad_(True))
+                print(f"Loaded {len(self._anchor_feat_dict)} (region, moment) features from checkpoint")
     
     def load_mlp_from_pt(self, path):
         """
