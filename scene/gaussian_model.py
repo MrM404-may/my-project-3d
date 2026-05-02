@@ -406,6 +406,7 @@ class GaussianModel:
         self._anchor = nn.Parameter(self.positions.requires_grad_(True))
         self._offset = nn.Parameter(offsets.requires_grad_(True))
         self._anchor_feat = nn.Parameter(anchors_feat.requires_grad_(True))
+        self._anchor_feat_by_moment[0] = self._anchor_feat  # 初始化时创建默认时刻 0 的特征
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(False))
         self._opacity = nn.Parameter(opacities.requires_grad_(False))
@@ -488,9 +489,10 @@ class GaussianModel:
                 {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
                 {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             ]
-            # 添加字典中存储的所有时刻的特征
+            # 添加字典中除时刻 0 外的所有时刻的特征（时刻 0 就是 _anchor_feat，已在上面添加）
             for moment, feat in self._anchor_feat_by_moment.items():
-                l.append({'params': [feat], 'lr': training_args.feature_lr, "name": f"anchor_feat_{moment}"})
+                if moment != 0:  # 跳过时刻 0，避免重复添加
+                    l.append({'params': [feat], 'lr': training_args.feature_lr, "name": f"anchor_feat_{moment}"})
         
         # 无论是否冻结，统一且仅添加一次 MLP / Embedding 参数
         for i in range(self.num_regions):
@@ -683,7 +685,9 @@ class GaussianModel:
         self._anchor_mask = torch.ones(self._anchor.shape[0], dtype=torch.bool, device="cuda")
         self.levels = torch.max(self._level) - torch.min(self._level) + 1
         
-        # 加载多时刻特征
+        # 确保默认时刻 0 的特征存在
+        self._anchor_feat_by_moment[0] = self._anchor_feat
+        # 加载多时刻特征（如果存在）
         moment_feat_path = path.replace('.ply', '_moments.pt')
         if os.path.exists(moment_feat_path):
             moment_data = torch.load(moment_feat_path)
