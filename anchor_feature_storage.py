@@ -24,6 +24,7 @@ class AnchorFeatureStorage:
         self.positions_dict = {}  # 按 (region, moment) 分组的位置 numpy 数组
         self.features_dict = {}  # 按 (region, moment) 分组的特征
         self.kdtrees = {}  # 按 (region, moment) 分组的 KDTree 索引
+        self._group_index = None  # 快速分组索引
         self._raw_loaded = False  # 是否已加载原始数据
         
         # 创建保存目录
@@ -36,18 +37,31 @@ class AnchorFeatureStorage:
         """只为特定的 (region, moment) 构建缓存"""
         region, moment = cache_key
         
+        print(f"[AnchorFeatureStorage] Building cache for region {region}, moment {moment}...")
+        
         # 收集该组的所有数据
         positions_list = []
         features_list = []
         
-        for key, feat in self.storage_dict.items():
-            key_region, key_moment, pos = key
-            if key_region == region and key_moment == moment:
-                positions_list.append(pos)
-                features_list.append(feat)
+        # 快速查找：先尝试用分组索引（如果已构建）
+        if hasattr(self, '_group_index') and self._group_index is not None:
+            if cache_key in self._group_index:
+                items = self._group_index[cache_key]
+                positions_list = [pos for pos, feat in items]
+                features_list = [feat for pos, feat in items]
+        else:
+            # 没有分组索引，遍历所有键（第一次较慢，但之后会构建索引）
+            for key, feat in self.storage_dict.items():
+                key_region, key_moment, pos = key
+                if key_region == region and key_moment == moment:
+                    positions_list.append(pos)
+                    features_list.append(feat)
         
         if len(positions_list) == 0:
+            print(f"[AnchorFeatureStorage] No data found for region {region}, moment {moment}")
             return
+        
+        print(f"[AnchorFeatureStorage] Found {len(positions_list)} entries for region {region}, moment {moment}")
         
         # 转换为 numpy 数组
         positions_array = np.array(positions_list, dtype=np.float32)
@@ -57,10 +71,15 @@ class AnchorFeatureStorage:
         # 构建 KDTree
         try:
             from scipy.spatial import KDTree
+            print(f"[AnchorFeatureStorage] Building KDTree...")
             self.kdtrees[cache_key] = KDTree(positions_array)
+            print(f"[AnchorFeatureStorage] KDTree built successfully")
         except ImportError:
             self.kdtrees[cache_key] = None
-            print(f"[AnchorFeatureStorage] scipy not available, using brute force matching")
+            print(f"[AnchorFeatureStorage] scipy not available, using batch matching")
+        except Exception as e:
+            self.kdtrees[cache_key] = None
+            print(f"[AnchorFeatureStorage] KDTree build failed: {e}, using batch matching")
     
     def _build_full_cache(self):
         """构建完整缓存（用于非延迟加载模式）"""
@@ -189,10 +208,13 @@ class AnchorFeatureStorage:
         
         if cache_key not in self.positions_dict:
             # 没有该 region 和 moment 的数据
+            print(f"[AnchorFeatureStorage] No data found for region {region}, moment {moment}")
             return None, torch.zeros(query_positions.shape[0], dtype=torch.bool, device=query_positions.device if isinstance(query_positions, torch.Tensor) else 'cpu')
         
         stored_positions = self.positions_dict[cache_key]
         stored_features = self.features_dict[cache_key]
+        
+        print(f"[AnchorFeatureStorage] Matching {query_positions.shape[0]} queries against {len(stored_positions)} stored positions for region {region}, moment {moment}")
         
         # 将 query_positions 转换为 numpy
         if isinstance(query_positions, torch.Tensor):
@@ -202,19 +224,47 @@ class AnchorFeatureStorage:
             query_np = np.array(query_positions)
             device = 'cpu'
         
-        # 使用 KDTree 快速查找最近邻
+        # 优先尝试 KDTree
+        use_kdtree = False
         if cache_key in self.kdtrees and self.kdtrees[cache_key] is not None:
-            kdtree = self.kdtrees[cache_key]
-            min_distances, closest_indices = kdtree.query(query_np, k=1)
-        else:
-            # 无 KDTree 时使用暴力匹配
-            diff = query_np[:, np.newaxis, :] - stored_positions[np.newaxis, :, :]
-            distances = np.sqrt(np.sum(diff ** 2, axis=-1))
-            min_distances = np.min(distances, axis=1)
-            closest_indices = np.argmin(distances, axis=1)
+            try:
+                kdtree = self.kdtrees[cache_key]
+                min_distances, closest_indices = kdtree.query(query_np, k=1)
+                use_kdtree = True
+                print(f"[AnchorFeatureStorage] Using KDTree for matching")
+            except Exception as e:
+                print(f"[AnchorFeatureStorage] KDTree query failed: {e}, falling back to batch matching")
+                use_kdtree = False
+        
+        # 如果没有 KDTree 或者 KDTree 失败，使用分批暴力匹配
+        if not use_kdtree:
+            print(f"[AnchorFeatureStorage] Using batch matching (memory efficient)")
+            min_distances = np.full(query_np.shape[0], np.inf, dtype=np.float32)
+            closest_indices = np.full(query_np.shape[0], -1, dtype=np.int64)
+            
+            # 分批处理，避免内存爆炸
+            batch_size = 1000  # 每批处理1000个查询点
+            for batch_start in range(0, query_np.shape[0], batch_size):
+                batch_end = min(batch_start + batch_size, query_np.shape[0])
+                query_batch = query_np[batch_start:batch_end]
+                
+                # 计算这个批次的距离
+                # 使用更高效的方式：利用广播但限制批次大小
+                # (B, 3) 和 (M, 3) -> (B, M)
+                diff = query_batch[:, np.newaxis, :] - stored_positions[np.newaxis, :, :]
+                distances = np.sqrt(np.sum(diff ** 2, axis=-1))
+                
+                # 找最小距离
+                batch_min_dists = np.min(distances, axis=1)
+                batch_min_indices = np.argmin(distances, axis=1)
+                
+                min_distances[batch_start:batch_end] = batch_min_dists
+                closest_indices[batch_start:batch_end] = batch_min_indices
         
         # 确定哪些匹配在容差范围内
         match_mask = min_distances <= tolerance
+        match_count = np.sum(match_mask)
+        print(f"[AnchorFeatureStorage] Matched {match_count}/{query_positions.shape[0]} points (tolerance={tolerance})")
         
         # 准备输出特征
         feat_dim = None
@@ -277,6 +327,20 @@ class AnchorFeatureStorage:
             
             self._raw_loaded = True
             
+            # 构建分组索引（一次性遍历，之后快速查找）
+            print(f"[AnchorFeatureStorage] Building group index...")
+            self._group_index = {}
+            for key, feat in self.storage_dict.items():
+                region, moment, pos = key
+                cache_key = (region, moment)
+                if cache_key not in self._group_index:
+                    self._group_index[cache_key] = []
+                self._group_index[cache_key].append((pos, feat))
+            
+            print(f"[AnchorFeatureStorage] Group index built: {len(self._group_index)} groups")
+            for cache_key in sorted(self._group_index.keys()):
+                print(f"[AnchorFeatureStorage]   - Region {cache_key[0]}, Moment {cache_key[1]}: {len(self._group_index[cache_key])} entries")
+            
             # 如果不是延迟加载模式，构建完整缓存
             if not self.lazy_load:
                 self._build_full_cache()
@@ -287,6 +351,7 @@ class AnchorFeatureStorage:
             import traceback
             traceback.print_exc()
             self.storage_dict = {}
+            self._group_index = None
     
     def save(self):
         """保存存储数据"""

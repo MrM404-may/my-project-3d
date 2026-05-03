@@ -52,6 +52,16 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     if anchor_feat_file is not None and os.path.exists(anchor_feat_file):
         print(f"[Render] Loading anchor features from {anchor_feat_file}")
         gaussians.load_anchor_features_from_file(anchor_feat_file, format='pt' if anchor_feat_file.endswith('.pt') else 'json')
+        
+        # 打印调试信息
+        if hasattr(gaussians, '_anchor_feature_storage'):
+            storage = gaussians._anchor_feature_storage
+            all_regions = storage.get_all_regions()
+            all_moments = storage.get_all_moments()
+            print(f"[Render] Loaded anchor features:")
+            print(f"[Render]   - Total entries: {len(storage)}")
+            print(f"[Render]   - Available regions: {all_regions}")
+            print(f"[Render]   - Available moments: {all_moments}")
 
     # 加载区域配置和相机ID到区域的映射
     regions_config_path = f"/root/autodl-tmp/Octree-GS/Octree-GS/data/Ma0422/regions_config.json"
