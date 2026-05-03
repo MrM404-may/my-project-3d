@@ -801,7 +801,11 @@ class GaussianModel:
         Args:
             path: 保存路径，例如 'output/scene/feat_storage.pt'
         """
-        if self.rendering_feat_storage is None or len(self.rendering_feat_storage) == 0:
+        if self.rendering_feat_storage is None:
+            # 【修复】训练模式下 rendering_feat_storage 为 None，先初始化
+            self.rendering_feat_storage = RenderingAnchorFeatStorage(self.feat_dim, device=self._anchor.device)
+        
+        if len(self.rendering_feat_storage) == 0:
             # 从当前的 _anchor_feat_dict 构建
             print(f"save_rendering_features: Building rendering storage from current features")
             self._build_rendering_storage_from_current()
