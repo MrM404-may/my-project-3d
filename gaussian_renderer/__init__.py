@@ -45,23 +45,23 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     if visible_mask is None:
         visible_mask = torch.ones(pc.get_anchor.shape[0], dtype=torch.bool, device = pc.get_anchor.device)
 
-    # 获取锚点的region属性
-    region = pc._region[visible_mask]
-    # 过滤出属于当前相机区域的锚点
-    region_mask = (region == camera_region)
-    if region_mask.sum() == 0:
-        print("None")
-        # 如果没有属于当前区域的锚点，返回空
+    # 合并两个mask：同时满足visible和region条件
+    combined_mask = visible_mask.clone()
+    combined_mask[visible_mask] = (pc._region[visible_mask] == camera_region)
+    
+    if combined_mask.sum() == 0:
+        # 如果没有符合条件的锚点，返回空
         if is_training:
             return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, dtype=torch.bool, device=pc.get_anchor.device)
         else:
             return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device)
 
-    anchor = pc.get_anchor[visible_mask][region_mask]
-    feat = pc.get_anchor_feat[visible_mask][region_mask]
-    level = pc.get_level[visible_mask][region_mask]
-    grid_offsets = pc._offset[visible_mask][region_mask]
-    grid_scaling = pc.get_scaling[visible_mask][region_mask]
+    # 单次索引，避免多次索引操作
+    anchor = pc.get_anchor[combined_mask]
+    feat = pc.get_anchor_feat[combined_mask]
+    level = pc.get_level[combined_mask]
+    grid_offsets = pc._offset[combined_mask]
+    grid_scaling = pc.get_scaling[combined_mask]
 
     ## get view properties for anchor
     ob_view = anchor - viewpoint_camera.camera_center
@@ -115,9 +115,9 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         neural_opacity = pc.get_opacity_mlp(camera_region)(cat_local_view_wodist)
     
     if pc.dist2level=="progressive":
-        # 使用过滤后的region_mask来获取prog
-        prog = pc._prog_ratio[visible_mask][region_mask]
-        transition_mask = pc.transition_mask[visible_mask][region_mask]
+        # 使用合并后的combined_mask来获取prog，避免多次索引
+        prog = pc._prog_ratio[combined_mask]
+        transition_mask = pc.transition_mask[combined_mask]
         prog[~transition_mask] = 1.0
         neural_opacity = neural_opacity * prog
 
@@ -179,7 +179,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     Background tensor (bg_color) must be on GPU!
     """
 
-    is_training = pc.get_color_mlp(0).training
+    # 更高效地获取训练状态，避免索引MLP
+    is_training = pc.training
         
     if is_training:
         xyz, color, opacity, scaling, rot, neural_opacity, mask = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, camera_region=camera_region)

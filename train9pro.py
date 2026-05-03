@@ -520,7 +520,10 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
     print(f"\n🔄 [Init] 激活第一个区域: {current_region['name']} ...")
     gaussians.enter_region(current_polygon)
     # gaussians.restore_initial_state()
-    gaussians.set_region(current_region_idx)  
+    gaussians.set_region(current_region_idx)        
+    
+    # 优化：预先加载第一个区域的MLP缓存
+    gaussians._update_current_region_mlps(current_region_idx)
     
     # 初始化区域相机管理
     current_camera_pool = REGION_CAMERA_POOLS[current_region_idx]
@@ -601,6 +604,9 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
                 # 4. 进入新区域
                 gaussians.enter_region(current_polygon)
                 gaussians.set_region(current_region_idx)        
+                
+                # 优化：预先加载新区域的MLP缓存
+                gaussians._update_current_region_mlps(current_region_idx)
                 
                 # 【需求2】加载下个区域需要的所有照片到GPU
                 current_camera_pool = REGION_CAMERA_POOLS[current_region_idx]

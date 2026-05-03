@@ -76,6 +76,13 @@ class GaussianModel:
         self.fork = fork
         self.use_feat_bank = use_feat_bank
         self.freeze_gaussians = freeze_gaussians  # 绑定冻结标志
+        self.training = True  # 新增：训练状态标志
+
+        # 新增：MLP缓存，避免频繁索引
+        self._current_mlp_opacity = None
+        self._current_mlp_cov = None
+        self._current_mlp_color = None
+        self._current_region_idx = -1
 
         self.num_regions = num_regions
         self.appearance_dim = appearance_dim
@@ -171,6 +178,7 @@ class GaussianModel:
         # =========================================================================
 
     def eval(self):
+        self.training = False
         for mlp in self.mlp_opacity:
             mlp.eval()
         for mlp in self.mlp_cov:
@@ -183,6 +191,7 @@ class GaussianModel:
             self.embedding_appearance.eval()
 
     def train(self):
+        self.training = True
         for mlp in self.mlp_opacity:
             mlp.train()
         for mlp in self.mlp_cov:
@@ -692,6 +701,35 @@ class GaussianModel:
         return optimizable_tensors
 
     # ====================== 新增：核心分区训练 API ======================
+    
+    def _update_current_region_mlps(self, region_idx):
+        """缓存当前区域的MLP，避免频繁索引ModuleList"""
+        if region_idx != self._current_region_idx:
+            self._current_mlp_opacity = self.mlp_opacity[region_idx]
+            self._current_mlp_cov = self.mlp_cov[region_idx]
+            self._current_mlp_color = self.mlp_color[region_idx]
+            self._current_region_idx = region_idx
+    
+    def get_opacity_mlp(self, region=0):
+        """优化：优先使用缓存的MLP"""
+        if region == self._current_region_idx and self._current_mlp_opacity is not None:
+            return self._current_mlp_opacity
+        self._update_current_region_mlps(region)
+        return self._current_mlp_opacity
+    
+    def get_cov_mlp(self, region=0):
+        """优化：优先使用缓存的MLP"""
+        if region == self._current_region_idx and self._current_mlp_cov is not None:
+            return self._current_mlp_cov
+        self._update_current_region_mlps(region)
+        return self._current_mlp_cov
+    
+    def get_color_mlp(self, region=0):
+        """优化：优先使用缓存的MLP"""
+        if region == self._current_region_idx and self._current_mlp_color is not None:
+            return self._current_mlp_color
+        self._update_current_region_mlps(region)
+        return self._current_mlp_color
     
     def _torch_point_in_polygon(self, points: torch.Tensor, polygon: Polygon) -> torch.Tensor:
         """
