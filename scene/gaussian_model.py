@@ -376,10 +376,13 @@ class RenderingAnchorFeatStorage:
             }
             total_features += len(anchor_poses)
         
+        # 将 device 转为字符串
+        device_str = str(self.device) if hasattr(self.device, '__str__') else 'cuda'
+        
         save_data = {
             'version': 3,  # JSON 格式版本
             'feat_dim': self.feat_dim,
-            'device': self.device,
+            'device': device_str,
             'precision': self.precision,
             'total_features': total_features,
             'data': data
