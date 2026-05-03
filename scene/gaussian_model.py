@@ -1045,7 +1045,7 @@ class GaussianModel:
             save_path: 保存路径
             format: 保存格式，'pt'或'json'
         """
-        self._anchor_feature_storage = AnchorFeatureStorage(save_path, format)
+        self._anchor_feature_storage = AnchorFeatureStorage(save_path, format, lazy_load=False)
         print(f"  [OctreeGS] Initialized anchor feature storage at {save_path}")
     
     def save_current_anchor_features(self, region_id, moment=0):
@@ -1082,7 +1082,7 @@ class GaussianModel:
             format: 文件格式，'pt'或'json'
         """
         from anchor_feature_storage import AnchorFeatureStorage
-        self._anchor_feature_storage = AnchorFeatureStorage(file_path, format)
+        self._anchor_feature_storage = AnchorFeatureStorage(file_path, format, lazy_load=True)
     
     def apply_anchor_features(self, region, moment, tolerance=1e-3):
         """

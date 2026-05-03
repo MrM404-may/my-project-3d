@@ -7,21 +7,24 @@ import numpy as np
 class AnchorFeatureStorage:
     """
     用于存储高斯球的_anchor_feat属性，使用字典结构，键为(region, moment, position)
-    支持增量式保存和加载
+    支持增量式保存和加载，优化了大文件的加载和匹配性能
     """
-    def __init__(self, save_path, format='pt'):
+    def __init__(self, save_path, format='pt', lazy_load=True):
         """
         初始化存储
         参数:
             save_path: 保存路径
             format: 保存格式，'pt'或'json'，默认为'pt'
+            lazy_load: 是否延迟加载（只在需要时处理数据）
         """
         self.save_path = save_path
         self.format = format.lower()
-        self.storage_dict = {}  # 存储字典，键为(region, moment, position_tuple)，值为anchor_feat
-        self.positions_dict = {}  # 存储位置数据，键为(region, moment)，值为numpy数组
-        self.features_dict = {}  # 存储特征数据，键为(region, moment)，值为numpy数组
-        self.keys_dict = {}  # 存储原始键，键为(region, moment)，值为键列表
+        self.lazy_load = lazy_load
+        self.storage_dict = {}  # 完整存储字典
+        self.positions_dict = {}  # 按 (region, moment) 分组的位置 numpy 数组
+        self.features_dict = {}  # 按 (region, moment) 分组的特征
+        self.kdtrees = {}  # 按 (region, moment) 分组的 KDTree 索引
+        self._raw_loaded = False  # 是否已加载原始数据
         
         # 创建保存目录
         os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else '.', exist_ok=True)
@@ -29,28 +32,66 @@ class AnchorFeatureStorage:
         # 尝试加载已有的数据
         self._load_existing()
     
-    def _build_cache(self):
-        """构建位置和特征的缓存，以便快速查找"""
-        self.positions_dict = {}
-        self.features_dict = {}
-        self.keys_dict = {}
+    def _build_cache_for_key(self, cache_key):
+        """只为特定的 (region, moment) 构建缓存"""
+        region, moment = cache_key
         
+        # 收集该组的所有数据
+        positions_list = []
+        features_list = []
+        
+        for key, feat in self.storage_dict.items():
+            key_region, key_moment, pos = key
+            if key_region == region and key_moment == moment:
+                positions_list.append(pos)
+                features_list.append(feat)
+        
+        if len(positions_list) == 0:
+            return
+        
+        # 转换为 numpy 数组
+        positions_array = np.array(positions_list, dtype=np.float32)
+        self.positions_dict[cache_key] = positions_array
+        self.features_dict[cache_key] = features_list
+        
+        # 构建 KDTree
+        try:
+            from scipy.spatial import KDTree
+            self.kdtrees[cache_key] = KDTree(positions_array)
+        except ImportError:
+            self.kdtrees[cache_key] = None
+            print(f"[AnchorFeatureStorage] scipy not available, using brute force matching")
+    
+    def _build_full_cache(self):
+        """构建完整缓存（用于非延迟加载模式）"""
+        print(f"[AnchorFeatureStorage] Building cache for all regions/moments...")
+        
+        # 先按 (region, moment) 分组
+        groups = {}
         for key, feat in self.storage_dict.items():
             region, moment, pos = key
             cache_key = (region, moment)
-            
-            if cache_key not in self.positions_dict:
-                self.positions_dict[cache_key] = []
-                self.features_dict[cache_key] = []
-                self.keys_dict[cache_key] = []
-            
-            self.positions_dict[cache_key].append(pos)
-            self.features_dict[cache_key].append(feat)
-            self.keys_dict[cache_key].append(key)
+            if cache_key not in groups:
+                groups[cache_key] = []
+            groups[cache_key].append((pos, feat))
         
-        # 转换为 numpy 数组
-        for cache_key in self.positions_dict.keys():
-            self.positions_dict[cache_key] = np.array(self.positions_dict[cache_key])
+        # 为每个组构建缓存
+        for cache_key, items in groups.items():
+            positions_list = [pos for pos, feat in items]
+            features_list = [feat for pos, feat in items]
+            
+            positions_array = np.array(positions_list, dtype=np.float32)
+            self.positions_dict[cache_key] = positions_array
+            self.features_dict[cache_key] = features_list
+            
+            # 构建 KDTree
+            try:
+                from scipy.spatial import KDTree
+                self.kdtrees[cache_key] = KDTree(positions_array)
+            except ImportError:
+                self.kdtrees[cache_key] = None
+        
+        print(f"[AnchorFeatureStorage] Cache built for {len(groups)} groups")
     
     def _get_key(self, region, moment, position):
         """
@@ -97,8 +138,14 @@ class AnchorFeatureStorage:
             key = self._get_key(region, moment, positions[i])
             self.storage_dict[key] = self._encode_tensor(anchor_feats[i])
         
-        # 重建缓存
-        self._build_cache()
+        # 清除该组的缓存
+        cache_key = (region, moment)
+        if cache_key in self.positions_dict:
+            del self.positions_dict[cache_key]
+        if cache_key in self.features_dict:
+            del self.features_dict[cache_key]
+        if cache_key in self.kdtrees:
+            del self.kdtrees[cache_key]
     
     def get(self, region, moment, position):
         """
@@ -135,6 +182,11 @@ class AnchorFeatureStorage:
             match_mask: 布尔张量，指示哪些位置匹配成功
         """
         cache_key = (region, moment)
+        
+        # 如果是延迟加载模式，且该组未缓存，先构建缓存
+        if self.lazy_load and cache_key not in self.positions_dict and self._raw_loaded:
+            self._build_cache_for_key(cache_key)
+        
         if cache_key not in self.positions_dict:
             # 没有该 region 和 moment 的数据
             return None, torch.zeros(query_positions.shape[0], dtype=torch.bool, device=query_positions.device if isinstance(query_positions, torch.Tensor) else 'cpu')
@@ -150,22 +202,32 @@ class AnchorFeatureStorage:
             query_np = np.array(query_positions)
             device = 'cpu'
         
-        # 计算所有查询点与存储点的距离
-        # 使用广播计算
-        # stored_positions: [M, 3], query_np: [N, 3]
-        # 距离矩阵: [N, M]
-        diff = query_np[:, np.newaxis, :] - stored_positions[np.newaxis, :, :]
-        distances = np.sqrt(np.sum(diff ** 2, axis=-1))
-        
-        # 找到每个查询点的最小距离和对应的索引
-        min_distances = np.min(distances, axis=1)
-        closest_indices = np.argmin(distances, axis=1)
+        # 使用 KDTree 快速查找最近邻
+        if cache_key in self.kdtrees and self.kdtrees[cache_key] is not None:
+            kdtree = self.kdtrees[cache_key]
+            min_distances, closest_indices = kdtree.query(query_np, k=1)
+        else:
+            # 无 KDTree 时使用暴力匹配
+            diff = query_np[:, np.newaxis, :] - stored_positions[np.newaxis, :, :]
+            distances = np.sqrt(np.sum(diff ** 2, axis=-1))
+            min_distances = np.min(distances, axis=1)
+            closest_indices = np.argmin(distances, axis=1)
         
         # 确定哪些匹配在容差范围内
         match_mask = min_distances <= tolerance
         
         # 准备输出特征
-        feat_dim = len(stored_features[0]) if stored_features else 0
+        feat_dim = None
+        for feat in stored_features:
+            if self.format == 'json':
+                feat_dim = len(feat)
+            else:
+                feat_dim = feat.shape[0] if hasattr(feat, 'shape') else len(feat)
+            break
+        
+        if feat_dim is None:
+            return None, torch.zeros(query_positions.shape[0], dtype=torch.bool, device=device)
+        
         assigned_feats_np = np.zeros((query_positions.shape[0], feat_dim), dtype=np.float32)
         
         for i in range(query_positions.shape[0]):
@@ -173,7 +235,11 @@ class AnchorFeatureStorage:
                 if self.format == 'json':
                     assigned_feats_np[i] = np.array(stored_features[closest_indices[i]])
                 else:
-                    assigned_feats_np[i] = stored_features[closest_indices[i]].numpy()
+                    feat = stored_features[closest_indices[i]]
+                    if isinstance(feat, torch.Tensor):
+                        assigned_feats_np[i] = feat.numpy()
+                    else:
+                        assigned_feats_np[i] = np.array(feat)
         
         # 转换为 torch tensor
         assigned_feats = torch.tensor(assigned_feats_np, dtype=torch.float32, device=device)
@@ -189,8 +255,12 @@ class AnchorFeatureStorage:
         
         try:
             if self.format == 'pt':
+                import time
+                print(f"[AnchorFeatureStorage] Loading data from {self.save_path}...")
+                start_time = time.time()
                 self.storage_dict = torch.load(self.save_path)
-                print(f"[AnchorFeatureStorage] Loaded {len(self.storage_dict)} entries from {self.save_path}")
+                load_time = time.time() - start_time
+                print(f"[AnchorFeatureStorage] Loaded {len(self.storage_dict)} entries in {load_time:.2f}s")
             elif self.format == 'json':
                 with open(self.save_path, 'r') as f:
                     # JSON中键是字符串，需要转换
@@ -205,10 +275,17 @@ class AnchorFeatureStorage:
                         self.storage_dict[(region, moment, position)] = value
                 print(f"[AnchorFeatureStorage] Loaded {len(self.storage_dict)} entries from {self.save_path}")
             
-            # 构建缓存
-            self._build_cache()
+            self._raw_loaded = True
+            
+            # 如果不是延迟加载模式，构建完整缓存
+            if not self.lazy_load:
+                self._build_full_cache()
+            else:
+                print(f"[AnchorFeatureStorage] Lazy load enabled - cache will be built on demand")
         except Exception as e:
             print(f"[AnchorFeatureStorage] Error loading existing file: {e}, starting fresh")
+            import traceback
+            traceback.print_exc()
             self.storage_dict = {}
     
     def save(self):
@@ -246,7 +323,8 @@ class AnchorFeatureStorage:
         self.storage_dict = {}
         self.positions_dict = {}
         self.features_dict = {}
-        self.keys_dict = {}
+        self.kdtrees = {}
+        self._raw_loaded = False
     
     def __len__(self):
         return len(self.storage_dict)
