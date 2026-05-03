@@ -45,11 +45,12 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     if visible_mask is None:
         visible_mask = torch.ones(pc.get_anchor.shape[0], dtype=torch.bool, device = pc.get_anchor.device)
 
-    # 获取锚点的region属性
-    region = pc._region[visible_mask]
-    # 过滤出属于当前相机区域的锚点
-    region_mask = (region == camera_region)
-    if region_mask.sum() == 0:
+    # 【优化】合并两次掩码索引为一次操作
+    # 原先：先 visible_mask 索引，再 region_mask 索引（两次）
+    # 现在：直接用 & 合并，一次完成过滤
+    combined_mask = visible_mask & (pc._region == camera_region)
+    
+    if combined_mask.sum() == 0:
         print("None")
         # 如果没有属于当前区域的锚点，返回空
         if is_training:
@@ -57,15 +58,17 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         else:
             return torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 1, device=pc.get_anchor.device), torch.empty(0, 3, device=pc.get_anchor.device), torch.empty(0, 4, device=pc.get_anchor.device)
 
-    anchor = pc.get_anchor[visible_mask][region_mask]
+    # 【优化】一次性索引所有需要的数据，避免多次重复索引
+    anchor = pc.get_anchor[combined_mask]  # [N, 3] 位置
+    anchor_positions = anchor  # 直接使用，不需要重新索引
+    level = pc.get_level[combined_mask]
+    grid_offsets = pc._offset[combined_mask]
+    grid_scaling = pc.get_scaling[combined_mask]
     
-    # 获取过滤后的 anchor 位置（用于渲染存储按位置查找特征）
-    anchor_positions = pc.get_anchor[visible_mask][region_mask]  # [N, 3] 位置张量
-    
-    # 根据模式获取特征
+    # 【优化】一次性获取特征
     if is_training or pc.mode == 'training':
         # 训练模式：使用旧方法
-        feat = pc.get_anchor_feat_at_moment(region=camera_region, moment=moment)[visible_mask][region_mask]
+        feat = pc.get_anchor_feat_at_moment(region=camera_region, moment=moment)[combined_mask]
     else:
         # 渲染模式：使用新的基于位置的查找
         try:
@@ -76,11 +79,7 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
             )
         except Exception as e:
             # 回退到旧方法
-            feat = pc.get_anchor_feat_at_moment(region=camera_region, moment=moment)[visible_mask][region_mask]
-    
-    level = pc.get_level[visible_mask][region_mask]
-    grid_offsets = pc._offset[visible_mask][region_mask]
-    grid_scaling = pc.get_scaling[visible_mask][region_mask]
+            feat = pc.get_anchor_feat_at_moment(region=camera_region, moment=moment)[combined_mask]
 
     ## get view properties for anchor
     ob_view = anchor - viewpoint_camera.camera_center
@@ -134,9 +133,9 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         neural_opacity = pc.get_opacity_mlp(camera_region)(cat_local_view_wodist)
     
     if pc.dist2level=="progressive":
-        # 使用过滤后的region_mask来获取prog
-        prog = pc._prog_ratio[visible_mask][region_mask]
-        transition_mask = pc.transition_mask[visible_mask][region_mask]
+        # 【优化】使用合并后的 combined_mask 一次性获取
+        prog = pc._prog_ratio[combined_mask]
+        transition_mask = pc.transition_mask[combined_mask]
         prog[~transition_mask] = 1.0
         neural_opacity = neural_opacity * prog
 
