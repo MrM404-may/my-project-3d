@@ -104,10 +104,14 @@ class GaussianModel:
         self._region = torch.empty(0)
         self._offset = torch.empty(0)
         self._anchor_feat = torch.empty(0)
+        self._feat_anchor = torch.empty(0)
         self.opacity_accum = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+        # feat_anchor 字典存储
+        self._feat_anchor_dict = {}
+
         
         self.offset_gradient_accum = torch.empty(0)
         self.offset_denom = torch.empty(0)
@@ -384,6 +388,7 @@ class GaussianModel:
         self._anchor = nn.Parameter(self.positions.requires_grad_(True))
         self._offset = nn.Parameter(offsets.requires_grad_(True))
         self._anchor_feat = nn.Parameter(anchors_feat.requires_grad_(True))
+        self._feat_anchor = anchors_feat.clone()  # feat_anchor 初始化为与 _anchor_feat 相同的值
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(False))
         self._opacity = nn.Parameter(opacities.requires_grad_(False))
@@ -391,6 +396,7 @@ class GaussianModel:
         self._extra_level = torch.zeros(self._anchor.shape[0], dtype=torch.float, device="cuda")
         self._region = torch.zeros(self._anchor.shape[0], dtype=torch.float, device="cuda")
         self._anchor_mask = torch.ones(self._anchor.shape[0], dtype=torch.bool, device="cuda")
+
 
     def map_to_int_level(self, pred_level, cur_level):
         if self.dist2level=='floor':
@@ -1709,4 +1715,85 @@ class GaussianModel:
             # self.training_setup(self.training_args)  
 
         print(f"==================================================\n")
+    
+    def save_feat_anchor_to_dict(self, region_id, moment):
+        """
+        将当前高斯的 feat_anchor 保存到字典中
+        参数:
+            region_id: 区域ID
+            moment: moment值 (0-3)
+        """
+        if self._anchor.shape[0] == 0:
+            print(f"⚠️  没有高斯可以保存 feat_anchor")
+            return
+        
+        # 获取锚点位置
+        anchor_centers = self._anchor + (self.voxel_size / 2) / (float(self.fork) ** self._level)
+        
+        # 遍历每个高斯，保存到字典中
+        for i in range(self._anchor.shape[0]):
+            # 将张量转换为可哈希的元组作为键
+            pos_tuple = tuple(anchor_centers[i].cpu().numpy())
+            key = (region_id, moment, pos_tuple)
+            # 保存对应的 feat_anchor
+            self._feat_anchor_dict[key] = self._feat_anchor[i].clone().cpu()
+        
+        print(f"✅ 已保存 {self._anchor.shape[0]} 个高斯的 feat_anchor 到字典 (region={region_id}, moment={moment})")
+    
+    def save_feat_anchor_dict(self, save_path):
+        """
+        将 feat_anchor 字典增量保存到 .pt 文件
+        参数:
+            save_path: 保存路径
+        """
+        # 检查是否已有文件，如果有则先加载再合并
+        if os.path.exists(save_path):
+            try:
+                existing_dict = torch.load(save_path)
+                # 合并现有字典和新字典
+                self._feat_anchor_dict.update(existing_dict)
+                print(f"📦 已加载并合并现有文件: {save_path}")
+            except Exception as e:
+                print(f"⚠️  加载现有文件失败: {e}")
+        
+        # 保存字典
+        torch.save(self._feat_anchor_dict, save_path)
+        print(f"💾 feat_anchor 字典已保存到: {save_path}")
+    
+    def load_feat_anchor_dict(self, load_path):
+        """
+        从 .pt 文件加载 feat_anchor 字典
+        参数:
+            load_path: 加载路径
+        """
+        if os.path.exists(load_path):
+            self._feat_anchor_dict = torch.load(load_path)
+            print(f"📥 feat_anchor 字典已加载，共 {len(self._feat_anchor_dict)} 个条目")
+            return self._feat_anchor_dict
+        else:
+            print(f"⚠️  文件不存在: {load_path}")
+            return {}
+    
+    def get_feat_anchor_from_dict(self, region_id, moment, position):
+        """
+        从字典中获取指定位置的 feat_anchor
+        参数:
+            region_id: 区域ID
+            moment: moment值
+            position: 位置张量或元组
+        返回:
+            feat_anchor 张量，如果未找到返回 None
+        """
+        # 转换为可哈希的元组
+        if isinstance(position, torch.Tensor):
+            pos_tuple = tuple(position.cpu().numpy())
+        else:
+            pos_tuple = tuple(position)
+        
+        key = (region_id, moment, pos_tuple)
+        if key in self._feat_anchor_dict:
+            return self._feat_anchor_dict[key]
+        else:
+            return None
+
 
