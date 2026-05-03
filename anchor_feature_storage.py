@@ -328,18 +328,26 @@ class AnchorFeatureStorage:
             self._raw_loaded = True
             
             # 构建分组索引（一次性遍历，之后快速查找）
-            print(f"[AnchorFeatureStorage] Building group index...")
-            self._group_index = {}
-            for key, feat in self.storage_dict.items():
-                region, moment, pos = key
-                cache_key = (region, moment)
-                if cache_key not in self._group_index:
-                    self._group_index[cache_key] = []
-                self._group_index[cache_key].append((pos, feat))
-            
-            print(f"[AnchorFeatureStorage] Group index built: {len(self._group_index)} groups")
-            for cache_key in sorted(self._group_index.keys()):
-                print(f"[AnchorFeatureStorage]   - Region {cache_key[0]}, Moment {cache_key[1]}: {len(self._group_index[cache_key])} entries")
+            try:
+                print(f"[AnchorFeatureStorage] Building group index...")
+                import time
+                start_time = time.time()
+                
+                self._group_index = {}
+                for key, feat in self.storage_dict.items():
+                    region, moment, pos = key
+                    cache_key = (region, moment)
+                    if cache_key not in self._group_index:
+                        self._group_index[cache_key] = []
+                    self._group_index[cache_key].append((pos, feat))
+                
+                build_time = time.time() - start_time
+                print(f"[AnchorFeatureStorage] Group index built in {build_time:.2f}s: {len(self._group_index)} groups")
+                for cache_key in sorted(self._group_index.keys()):
+                    print(f"[AnchorFeatureStorage]   - Region {cache_key[0]}, Moment {cache_key[1]}: {len(self._group_index[cache_key])} entries")
+            except Exception as e:
+                print(f"[AnchorFeatureStorage] Failed to build group index: {e}")
+                self._group_index = None
             
             # 如果不是延迟加载模式，构建完整缓存
             if not self.lazy_load:
