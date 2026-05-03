@@ -184,10 +184,32 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         gaussians = GaussianModel(
             dataset.feat_dim, dataset.n_offsets, dataset.fork, dataset.use_feat_bank, dataset.appearance_dim, 
             dataset.add_opacity_dist, dataset.add_cov_dist, dataset.add_color_dist, dataset.add_level, 
-            dataset.visible_threshold, dataset.dist2level, dataset.base_layer, dataset.progressive, dataset.extend
+            dataset.visible_threshold, dataset.dist2level, dataset.base_layer, dataset.progressive, dataset.extend,
+            mode='rendering'  # 【新增】渲染模式
         )
         # 添加batch_size参数，支持批量加载相机
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False, resolution_scales=dataset.resolution_scales)
+        
+        # 【新增】加载并合并所有区域的渲染特征存储
+        region_idx = 0
+        while True:
+            region_storage_path = os.path.join(dataset.model_path, f"region_{region_idx}_feat_storage.pt")
+            if not os.path.exists(region_storage_path):
+                break
+            try:
+                # 第一个区域直接加载，后面的区域用 merge=True 合并
+                if region_idx == 0:
+                    gaussians.load_rendering_features(region_storage_path, device="cuda", strict=False)
+                else:
+                    gaussians.load_rendering_features(region_storage_path, device="cuda", strict=False, merge=True)
+                print(f"[Render] 加载区域 {region_idx} 的渲染特征: {region_storage_path}")
+            except Exception as e:
+                print(f"[Render] 加载区域 {region_idx} 的特征时出错: {e}")
+            region_idx += 1
+        
+        if region_idx == 0:
+            print(f"[Render] 未找到任何区域的特征存储文件，将使用传统方式加载")
+        
         gaussians.eval()
         gaussians.plot_levels()
         if dataset.random_background:

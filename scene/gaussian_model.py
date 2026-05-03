@@ -808,19 +808,31 @@ class GaussianModel:
         
         return self.rendering_feat_storage.save(path)
     
-    def load_rendering_features(self, path: str, device='cuda', strict=True):
+    def load_rendering_features(self, path: str, device='cuda', strict=True, merge=False):
         """
         渲染时加载特征存储
         Args:
             path: 加载路径
             device: 目标设备
             strict: 是否严格检查
+            merge: 是否与现有数据合并，而不是覆盖
         """
         if self.rendering_feat_storage is None:
             # 如果在非渲染模式，先创建存储
             self.rendering_feat_storage = RenderingAnchorFeatStorage(self.feat_dim, device=device)
         
-        return self.rendering_feat_storage.load(path, device, strict)
+        if merge:
+            # 先临时加载到另一个 storage
+            temp_storage = RenderingAnchorFeatStorage(self.feat_dim, device=device)
+            temp_storage.load(path, device, strict)
+            # 合并到当前 storage
+            for (r, m), feat_dict in temp_storage._storage.items():
+                for pos_key, feat in feat_dict.items():
+                    self.rendering_feat_storage.add_feature(r, m, pos_key, feat)
+            return temp_storage
+        else:
+            # 覆盖现有数据
+            return self.rendering_feat_storage.load(path, device, strict)
     
     def _build_rendering_storage_from_current(self):
         """从当前训练用的特征字典构建渲染存储 - 使用位置作为键"""
