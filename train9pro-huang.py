@@ -589,8 +589,8 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
                 gaussians.save_region_anchors(prev_region_idx, os.path.join(dataset.model_path, "region_anchors"))
                 
                 # 【新增】保存当前区域的渲染特征存储（按区域分开保存）
-                region_storage_path = os.path.join(dataset.model_path, f"region_{prev_region_idx}_feat_storage.pt")
-                gaussians.save_rendering_features(region_storage_path)
+                region_storage_path = os.path.join(dataset.model_path, f"region_{prev_region_idx}_feat_storage.json")
+                gaussians.save_rendering_features(region_storage_path, region=prev_region_idx)
                 print(f"[Region Switch] 保存区域 {prev_region_idx+1} 的渲染特征到: {region_storage_path}")
                 
                 # 3. 退出当前区域
@@ -720,8 +720,8 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
                 gaussians.save_region_anchors(current_region_idx, os.path.join(dataset.model_path, "region_anchors"))
                 
                 # 【新增】保存最后一个区域的渲染特征存储
-                region_storage_path = os.path.join(dataset.model_path, f"region_{current_region_idx}_feat_storage.pt")
-                gaussians.save_rendering_features(region_storage_path)
+                region_storage_path = os.path.join(dataset.model_path, f"region_{current_region_idx}_feat_storage.json")
+                gaussians.save_rendering_features(region_storage_path, region=current_region_idx)
                 print(f"[Final] 保存最后一个区域的渲染特征到: {region_storage_path}")
                 
                 progress_bar.close()

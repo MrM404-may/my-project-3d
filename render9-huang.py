@@ -193,7 +193,7 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         # 【新增】加载并合并所有区域的渲染特征存储
         region_idx = 0
         while True:
-            region_storage_path = os.path.join(dataset.model_path, f"region_{region_idx}_feat_storage.pt")
+            region_storage_path = os.path.join(dataset.model_path, f"region_{region_idx}_feat_storage.json")
             if not os.path.exists(region_storage_path):
                 break
             try:

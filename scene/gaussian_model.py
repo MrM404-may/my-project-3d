@@ -341,28 +341,43 @@ class RenderingAnchorFeatStorage:
     
     def save(self, path: str):
         """
-        保存特征存储
+        保存特征存储为 JSON 格式（便于调试和跨平台兼容）
         """
+        import json
+        
         save_dir = os.path.dirname(path)
         if save_dir and not os.path.exists(save_dir):
             os.makedirs(save_dir, exist_ok=True)
         
+        # 转换为 JSON 友好格式
         data = {}
         total_features = 0
         
         for (region, moment), feat_dict in self._storage.items():
+            # 将位置元组和特征分开存储
             anchor_poses = list(feat_dict.keys())
-            feats_list = [feat_dict[pos] for pos in anchor_poses]
-            feats_tensor = torch.stack(feats_list, dim=0) if feats_list else torch.empty(0, self.feat_dim)
+            feats_list = []
             
-            data[(region, moment)] = {
-                'anchor_poses': anchor_poses,
-                'feats': feats_tensor.detach().cpu()
+            for pos in anchor_poses:
+                feat = feat_dict[pos]
+                # 将张量转为 numpy 再转为列表
+                if isinstance(feat, torch.Tensor):
+                    feats_list.append(feat.detach().cpu().numpy().tolist())
+                else:
+                    feats_list.append(feat)
+            
+            # 转换为 JSON 兼容的列表格式
+            import numpy as np
+            feats_array = np.array(feats_list)
+            
+            data[f"({region}, {moment})"] = {
+                'anchor_poses': [[float(p) for p in pos] for pos in anchor_poses],
+                'feats': feats_array.tolist()
             }
             total_features += len(anchor_poses)
         
         save_data = {
-            'version': 2,  # 新版本号，标识使用位置作为键
+            'version': 3,  # JSON 格式版本
             'feat_dim': self.feat_dim,
             'device': self.device,
             'precision': self.precision,
@@ -370,14 +385,19 @@ class RenderingAnchorFeatStorage:
             'data': data
         }
         
-        torch.save(save_data, path)
+        with open(path, 'w') as f:
+            json.dump(save_data, f)
+        
         print(f"RenderingAnchorFeatStorage: Saved {total_features} features to {path}")
         return save_data
     
     def load(self, path: str, device='cuda', strict=True):
         """
-        加载特征存储
+        加载特征存储（支持 JSON 和旧版 PT 格式）
         """
+        import json
+        import numpy as np
+        
         if not os.path.exists(path):
             if strict:
                 raise FileNotFoundError(f"RenderingAnchorFeatStorage: File not found at {path}")
@@ -385,11 +405,16 @@ class RenderingAnchorFeatStorage:
                 print(f"RenderingAnchorFeatStorage: File not found at {path}")
                 return
         
-        load_data = torch.load(path, map_location='cpu')
+        # 检查文件格式
+        if path.endswith('.json'):
+            # JSON 格式加载
+            with open(path, 'r') as f:
+                load_data = json.load(f)
+        else:
+            # 旧版 PT 格式加载
+            load_data = torch.load(path, map_location='cpu')
         
         version = load_data.get('version', 0)
-        if version < 2 and strict:
-            print(f"Warning: Loading older format (version {version}), position-based keys may not be compatible")
         
         self.feat_dim = load_data.get('feat_dim', self.feat_dim)
         self.device = device
@@ -399,15 +424,31 @@ class RenderingAnchorFeatStorage:
         total_loaded = 0
         data = load_data.get('data', {})
         
-        for (region, moment), entry in data.items():
+        for key_str, entry in data.items():
+            # 解析键字符串 "({region}, {moment})" -> (region, moment)
+            import re
+            match = re.match(r'\((\d+),\s*(\d+)\)', key_str)
+            if match:
+                region, moment = int(match.group(1)), int(match.group(2))
+            else:
+                # 尝试直接解析元组
+                region, moment = key_str
+            
             anchor_poses = entry.get('anchor_poses', [])
-            feats_tensor = entry.get('feats', torch.empty(0, self.feat_dim))
+            feats_data = entry.get('feats', [])
             
-            feats_tensor = feats_tensor.to(device)
+            # 转换为张量并移动到设备
+            if isinstance(feats_data, list):
+                feats_tensor = torch.tensor(feats_data, dtype=torch.float32, device=device)
+            else:
+                feats_tensor = feats_data.to(device)
             
+            # 构建存储
             self._storage[(region, moment)] = {}
             for i, pos in enumerate(anchor_poses):
-                self._storage[(region, moment)][pos] = feats_tensor[i]
+                # 将列表转为元组作为键
+                pos_tuple = tuple(pos) if isinstance(pos, list) else pos
+                self._storage[(region, moment)][pos_tuple] = feats_tensor[i]
             
             total_loaded += len(anchor_poses)
         
@@ -795,11 +836,12 @@ class GaussianModel:
         # 情况2: 训练模式或回退
         return self.get_anchor_feat_at_moment(region, moment)
     
-    def save_rendering_features(self, path: str):
+    def save_rendering_features(self, path: str, region=None):
         """
         训练结束时保存渲染用特征存储
         Args:
-            path: 保存路径，例如 'output/scene/feat_storage.pt'
+            path: 保存路径，例如 'output/scene/feat_storage.json'
+            region: 如果指定，只保存该区域的高斯球；否则保存所有区域
         """
         if self.rendering_feat_storage is None:
             # 【修复】训练模式下 rendering_feat_storage 为 None，先初始化
@@ -807,8 +849,8 @@ class GaussianModel:
         
         if len(self.rendering_feat_storage) == 0:
             # 从当前的 _anchor_feat_dict 构建
-            print(f"save_rendering_features: Building rendering storage from current features")
-            self._build_rendering_storage_from_current()
+            print(f"save_rendering_features: Building rendering storage from current features for region={region}")
+            self._build_rendering_storage_from_current(region=region)
         
         return self.rendering_feat_storage.save(path)
     
@@ -838,15 +880,40 @@ class GaussianModel:
             # 覆盖现有数据
             return self.rendering_feat_storage.load(path, device, strict)
     
-    def _build_rendering_storage_from_current(self):
-        """从当前训练用的特征字典构建渲染存储 - 使用位置作为键"""
-        for (region, moment), feat_tensor in self._anchor_feat_dict.items():
-            # 使用 anchor 位置作为键
-            anchor_positions = self._anchor.detach()  # [N, 3]
+    def _build_rendering_storage_from_current(self, region=None):
+        """
+        从当前训练用的特征字典构建渲染存储 - 使用位置作为键
+        
+        Args:
+            region: 如果指定，只保存该区域的高斯球；否则保存所有区域
+        """
+        # 获取当前区域的高斯球掩码
+        if region is not None:
+            # 只获取指定区域的高斯球
+            region_mask = (self._region == region)
+            anchor_positions = self._anchor.detach()[region_mask]  # [N_region, 3]
+        else:
+            # 保存所有区域
+            anchor_positions = self._anchor.detach()  # [N_all, 3]
+        
+        # 遍历所有 (region, moment) 组合
+        for (r, m), feat_tensor in self._anchor_feat_dict.items():
+            if region is not None and r != region:
+                # 只处理指定区域
+                continue
+            
+            # 获取该区域对应的特征
+            if region is not None:
+                feat_for_region = feat_tensor[region_mask]  # [N_region, feat_dim]
+            else:
+                feat_for_region = feat_tensor
+            
+            # 添加到渲染存储
             self.rendering_feat_storage.add_region_features_batch(
-                region, moment, anchor_positions, feat_tensor
+                r, m, anchor_positions, feat_for_region
             )
-        print(f"_build_rendering_storage_from_current: Built storage with {len(self.rendering_feat_storage)} total entries")
+        
+        print(f"_build_rendering_storage_from_current: Built storage with {len(self.rendering_feat_storage)} total entries for region={region}")
     
     def load_region_features_for_render(self, region_paths: list):
         """
