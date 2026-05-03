@@ -31,7 +31,11 @@ from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background, show_level, ape_code, region_override=None, moment=0, anchor_feat_file=None):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, show_level, ape_code):
+    # 直接设置 moment 和 anchor_feat_file
+    moment = 0  # 硬编码的 moment 值
+    anchor_feat_file = os.path.join(model_path, "anchor_features.pt")  # anchor features 文件路径
+    
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     makedirs(render_path, exist_ok=True)
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
@@ -194,7 +198,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         with open(os.path.join(model_path, name, "ours_{}".format(iteration), "per_view_count_level.json"), 'w') as fp:
             json.dump(per_view_level_dict, fp, indent=True)     
      
-def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, show_level : bool, ape_code : int, region_override=None, moment=0, anchor_feat_file=None):
+def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, show_level : bool, ape_code : int):
     with torch.no_grad():
         gaussians = GaussianModel(
             dataset.feat_dim, dataset.n_offsets, dataset.fork, dataset.use_feat_bank, dataset.appearance_dim, 
@@ -223,13 +227,13 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
                 if not batch_cameras:
                     continue
                 print(f"Rendering train set, batch {batch_idx+1}/{num_batches}...")
-                render_set(dataset.model_path, "train", scene.loaded_iter, batch_cameras, gaussians, pipeline, background, show_level, batch_idx, region_override, moment, anchor_feat_file)
+                render_set(dataset.model_path, "train", scene.loaded_iter, batch_cameras, gaussians, pipeline, background, show_level, batch_idx)
                 # 释放内存
                 del batch_cameras
                 torch.cuda.empty_cache()
 
         if not skip_test:
-            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, show_level, ape_code, region_override, moment, anchor_feat_file)
+            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, show_level, ape_code)
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -242,14 +246,11 @@ if __name__ == "__main__":
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--show_level", action="store_true")
-    parser.add_argument("--region", type=int, default=None, help="Override region for rendering")
-    parser.add_argument("--moment", type=int, default=0, help="Moment value for anchor features")
-    parser.add_argument("--anchor_feat_file", type=str, default=None, help="Path to anchor features file (.pt or .json)")
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.show_level, args.ape, args.region, args.moment, args.anchor_feat_file)
+    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.show_level, args.ape)
     
