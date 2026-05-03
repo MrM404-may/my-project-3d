@@ -152,19 +152,15 @@ class RenderingAnchorFeatStorage:
     
     def _tensor_to_keys(self, positions):
         """
-        将高斯球位置张量批量转换为键列表 - 【优化】
+        将高斯球位置张量批量转换为键列表
         Args:
             positions: 张量 [N, 3]
         Returns:
             list of tuple
         """
-        # 【优化】向量化处理，避免 340万次循环
-        scale = 10 ** self.precision
-        # 先全部移到 CPU，用 numpy 向量化 round
-        positions_np = positions.detach().cpu().numpy()
-        positions_rounded = np.round(positions_np * scale) / scale
-        # 然后转 tuple 列表
-        keys = [tuple(row) for row in positions_rounded]
+        keys = []
+        for pos in positions:
+            keys.append(self._position_to_key(pos))
         return keys
     
     def add_feature(self, region: int, moment: int, anchor_position, feat: torch.Tensor):
@@ -190,7 +186,7 @@ class RenderingAnchorFeatStorage:
     def add_region_features_batch(self, region: int, moment: int, 
                                    anchor_positions, feats: torch.Tensor):
         """
-        批量添加某个区域的特征 - 【优化】
+        批量添加某个区域的特征
         Args:
             region: 区域标识
             moment: 时刻标识
@@ -202,8 +198,8 @@ class RenderingAnchorFeatStorage:
             self._storage[key] = {}
         
         position_keys = self._tensor_to_keys(anchor_positions)
-        # 【优化】用 zip 一次性建立字典，比 for 循环快
-        self._storage[key].update(dict(zip(position_keys, feats.detach())))
+        for i, pos_key in enumerate(position_keys):
+            self._storage[key][pos_key] = feats[i]
         
         # 清除缓存
         if key in self._tensor_cache:
@@ -345,7 +341,7 @@ class RenderingAnchorFeatStorage:
     
     def save(self, path: str):
         """
-        保存特征存储 - 【优化】
+        保存特征存储
         """
         save_dir = os.path.dirname(path)
         if save_dir and not os.path.exists(save_dir):
@@ -355,10 +351,8 @@ class RenderingAnchorFeatStorage:
         total_features = 0
         
         for (region, moment), feat_dict in self._storage.items():
-            # 【优化】用 keys() 和 values() 一次性获取列表
             anchor_poses = list(feat_dict.keys())
-            feats_list = list(feat_dict.values())
-            # 【优化】直接 stack，不用再去取一遍
+            feats_list = [feat_dict[pos] for pos in anchor_poses]
             feats_tensor = torch.stack(feats_list, dim=0) if feats_list else torch.empty(0, self.feat_dim)
             
             data[(region, moment)] = {
@@ -376,7 +370,6 @@ class RenderingAnchorFeatStorage:
             'data': data
         }
         
-        # 【优化】直接用 torch.save，这是原生 C++ 实现，超级快
         torch.save(save_data, path)
         print(f"RenderingAnchorFeatStorage: Saved {total_features} features to {path}")
         return save_data
