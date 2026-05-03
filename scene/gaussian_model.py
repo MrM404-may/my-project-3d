@@ -774,7 +774,7 @@ class GaussianModel:
         self.rendering_feat_storage = RenderingAnchorFeatStorage(self.feat_dim, device='cuda')
         self.rendering_feat_storage.merge_multi_region_features(region_feature_dict)
     
-    def get_anchor_feat_for_render(self, region: int, moment: int, anchor_positions=None, anchor_mask=None):
+    def get_anchor_feat_for_render(self, region: int, moment: int, anchor_positions=None):
         """
         渲染时获取特征的方法 - 基于高斯球位置查找
         
@@ -782,29 +782,18 @@ class GaussianModel:
             region: 区域标识
             moment: 时刻标识
             anchor_positions: 高斯球位置张量 [N, 3]，用于按位置查找特征
-            anchor_mask: (可选) 用于回退时的掩码
         """
         # 情况1: 渲染模式且有存储
         if self.mode == 'rendering' and self.rendering_feat_storage is not None:
             if anchor_positions is not None:
                 try:
                     # 使用基于位置的批量查找
-                    feat = self.rendering_feat_storage.get_batch(region, moment, anchor_positions)
-                    # 【修复】检查形状是否匹配
-                    if feat.shape[0] == anchor_positions.shape[0]:
-                        return feat
-                    else:
-                        # 如果形状不匹配，也回退
-                        print(f"Warning: Feature shape mismatch (got {feat.shape[0]}, expect {anchor_positions.shape[0]})")
+                    return self.rendering_feat_storage.get_batch(region, moment, anchor_positions)
                 except KeyError as e:
                     print(f"Warning: Feature not found for ({region}, {moment}): {e}")
         
-        # 情况2: 回退到传统方式
-        feat = self.get_anchor_feat_at_moment(region, moment)
-        if anchor_mask is not None:
-            # 【修复】回退时也应用同样的掩码
-            feat = feat[anchor_mask]
-        return feat
+        # 情况2: 训练模式或回退
+        return self.get_anchor_feat_at_moment(region, moment)
     
     def save_rendering_features(self, path: str):
         """

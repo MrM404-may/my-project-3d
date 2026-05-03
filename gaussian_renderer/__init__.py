@@ -75,12 +75,10 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
             feat = pc.get_anchor_feat_for_render(
                 region=camera_region, 
                 moment=moment, 
-                anchor_positions=anchor_positions,
-                anchor_mask=combined_mask  # 【新增】传递掩码，用于回退
+                anchor_positions=anchor_positions
             )
         except Exception as e:
             # 回退到旧方法
-            print(f"Warning: Falling back to traditional feature retrieval: {e}")
             feat = pc.get_anchor_feat_at_moment(region=camera_region, moment=moment)[combined_mask]
 
     ## get view properties for anchor
