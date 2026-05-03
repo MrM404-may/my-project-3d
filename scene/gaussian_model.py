@@ -1074,6 +1074,47 @@ class GaussianModel:
         self._anchor_feature_storage.save()
         print(f"  [OctreeGS] Saved anchor features for region {region_id}, moment {moment}")
     
+    def load_anchor_features_from_file(self, file_path, format='pt'):
+        """
+        从文件加载 anchor feature 存储
+        参数:
+            file_path: 文件路径
+            format: 文件格式，'pt'或'json'
+        """
+        from anchor_feature_storage import AnchorFeatureStorage
+        self._anchor_feature_storage = AnchorFeatureStorage(file_path, format)
+    
+    def apply_anchor_features(self, region, moment, tolerance=1e-3):
+        """
+        根据 region 和 moment 从存储中匹配并应用 _anchor_feat
+        参数:
+            region: 区域索引
+            moment: 时刻值
+            tolerance: 匹配容差
+        """
+        if not hasattr(self, '_anchor_feature_storage') or self._anchor_feature_storage is None:
+            print("[GaussianModel] Error: Anchor feature storage not initialized")
+            return
+        
+        # 获取当前高斯球的位置（考虑八叉树层级偏移）
+        anchor_centers = self._anchor + (self.voxel_size / 2) / (float(self.fork) ** self._level)
+        
+        # 匹配特征
+        assigned_feats, match_mask = self._anchor_feature_storage.match_and_assign_features(
+            region, moment, anchor_centers, tolerance
+        )
+        
+        if assigned_feats is None:
+            print(f"[GaussianModel] No anchor features found for region {region}, moment {moment}")
+            return
+        
+        # 应用匹配到的特征
+        if torch.any(match_mask):
+            self._anchor_feat.data[match_mask] = assigned_feats[match_mask].to(self._anchor_feat.device)
+            print(f"[GaussianModel] Applied {torch.sum(match_mask)} anchor features for region {region}, moment {moment}")
+        else:
+            print(f"[GaussianModel] No matching anchor features found for region {region}, moment {moment}")
+    
     def _prune_anchor_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
