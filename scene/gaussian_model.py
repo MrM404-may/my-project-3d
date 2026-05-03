@@ -27,6 +27,9 @@ from scene.embedding import Embedding
 from einops import repeat
 import math
 
+# 导入我们创建的AnchorFeatureStorage
+from anchor_feature_storage import AnchorFeatureStorage
+
 # ====================== 新增：引入分区训练依赖 ======================
 from shapely.geometry import Polygon, Point
 # =====================================================================
@@ -1034,9 +1037,43 @@ class GaussianModel:
             self._scaling = nn.Parameter(self._initial_state['scaling'].requires_grad_(True))
             self._rotation = nn.Parameter(self._initial_state['rotation'].requires_grad_(False))
             self._opacity = nn.Parameter(self._initial_state['opacity'].requires_grad_(False))
-            print(f"[GaussianModel] 恢复初始状态，锚点数量: {self._anchor.shape[0]}")
-        else:
-            print("[GaussianModel] 警告: 没有保存的初始状态")
+    
+    def init_anchor_feature_storage(self, save_path, format='pt'):
+        """
+        初始化_anchor_feat存储
+        参数:
+            save_path: 保存路径
+            format: 保存格式，'pt'或'json'
+        """
+        self._anchor_feature_storage = AnchorFeatureStorage(save_path, format)
+        print(f"  [OctreeGS] Initialized anchor feature storage at {save_path}")
+    
+    def save_current_anchor_features(self, region_id, moment=0):
+        """
+        保存当前所有高斯球的_anchor_feat
+        参数:
+            region_id: 区域ID
+            moment: 时刻值，默认为0
+        """
+        if not hasattr(self, '_anchor_feature_storage'):
+            print(f"  [OctreeGS] Error: Anchor feature storage not initialized")
+            return
+        
+        # 获取高斯球位置（考虑八叉树层级偏移，取体素中心）
+        anchor_centers = self._anchor + (self.voxel_size / 2) / (float(self.fork) ** self._level)
+        
+        # 添加到存储
+        self._anchor_feature_storage.add(
+            region=region_id,
+            moment=moment,
+            positions=anchor_centers,
+            anchor_feats=self._anchor_feat
+        )
+        
+        # 保存到文件
+        self._anchor_feature_storage.save()
+        print(f"  [OctreeGS] Saved anchor features for region {region_id}, moment {moment}")
+    
     def _prune_anchor_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:

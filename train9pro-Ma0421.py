@@ -416,6 +416,10 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
+    
+    # 初始化 anchor feature 存储
+    anchor_feat_save_path = os.path.join(dataset.model_path, "anchor_features.pt")  # 或者改为 .json
+    gaussians.init_anchor_feature_storage(anchor_feat_save_path, format='pt')
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
@@ -590,6 +594,9 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
                 # 2. 存储当前区域训练好的锚点
                 gaussians.save_region_anchors(prev_region_idx, os.path.join(dataset.model_path, "region_anchors"))
                 
+                # 3. 保存当前区域的 anchor features（moment默认设为0，可根据需要修改）
+                gaussians.save_current_anchor_features(prev_region_idx, moment=0)
+                
                 # 3. 退出当前区域
                 gaussians.clean_out_region(current_polygon, f"Region_{current_region_idx}")
                 gaussians.clean_in_region()
@@ -704,6 +711,8 @@ def training(dataset, opt, pipe, dataset_name, testing_iterations, saving_iterat
                 # 存储最后一个区域的训练好的锚点
                 gaussians.set_region(current_region_idx)
                 gaussians.save_region_anchors(current_region_idx, os.path.join(dataset.model_path, "region_anchors"))
+                # 保存最后一个区域的 anchor features
+                gaussians.save_current_anchor_features(current_region_idx, moment=0)
                 progress_bar.close()
 
             # Log and save
