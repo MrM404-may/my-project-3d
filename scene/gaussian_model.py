@@ -890,33 +890,53 @@ class GaussianModel:
         Args:
             region: 如果指定，只保存该区域的高斯球；否则保存所有区域
         """
+        # 【调试】打印当前状态
+        print(f"[_build_rendering_storage_from_current] region={region}")
+        print(f"  - self._anchor.shape: {self._anchor.shape}")
+        print(f"  - self._region.shape: {self._region.shape}")
+        print(f"  - _anchor_feat_dict keys: {list(self._anchor_feat_dict.keys())}")
+        for key, feat in self._anchor_feat_dict.items():
+            print(f"    {key}: {feat.shape}")
+        
         # 获取当前区域的高斯球掩码
         if region is not None:
             # 只获取指定区域的高斯球
             region_mask = (self._region == region)
+            num_in_region = region_mask.sum().item()
             anchor_positions = self._anchor.detach()[region_mask]  # [N_region, 3]
+            print(f"  - region_mask True count: {num_in_region}")
+            print(f"  - anchor_positions.shape: {anchor_positions.shape}")
         else:
             # 保存所有区域
             anchor_positions = self._anchor.detach()  # [N_all, 3]
+            print(f"  - anchor_positions.shape (all): {anchor_positions.shape}")
         
         # 遍历所有 (region, moment) 组合
+        total_saved = 0
         for (r, m), feat_tensor in self._anchor_feat_dict.items():
             if region is not None and r != region:
                 # 只处理指定区域
                 continue
             
-            # 获取该区域对应的特征
-            if region is not None:
-                feat_for_region = feat_tensor[region_mask]  # [N_region, feat_dim]
+            # 【验证】确保特征数量与位置数量一致
+            if feat_tensor.shape[0] != anchor_positions.shape[0]:
+                print(f"  [WARNING] Shape mismatch for ({r}, {m}): feat={feat_tensor.shape[0]} vs pos={anchor_positions.shape[0]}")
+                # 使用较小的数量进行截断
+                min_count = min(feat_tensor.shape[0], anchor_positions.shape[0])
+                feat_for_region = feat_tensor[:min_count]
+                positions_to_save = anchor_positions[:min_count]
             else:
                 feat_for_region = feat_tensor
+                positions_to_save = anchor_positions
             
             # 添加到渲染存储
             self.rendering_feat_storage.add_region_features_batch(
-                r, m, anchor_positions, feat_for_region
+                r, m, positions_to_save, feat_for_region
             )
+            total_saved += positions_to_save.shape[0]
         
-        print(f"_build_rendering_storage_from_current: Built storage with {len(self.rendering_feat_storage)} total entries for region={region}")
+        print(f"[_build_rendering_storage_from_current] Saved {total_saved} features for region={region}")
+        print(f"  RenderingAnchorFeatStorage total entries: {len(self.rendering_feat_storage)}")
     
     def load_region_features_for_render(self, region_paths: list):
         """
@@ -1387,6 +1407,8 @@ class GaussianModel:
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
+        
+        # 首先，处理优化器中已有的所有参数组
         for group in self.optimizer.param_groups:
             if  'mlp' in group['name'] or \
                 'conv' in group['name'] or \
@@ -1420,7 +1442,41 @@ class GaussianModel:
             else:
                 group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
                 optimizable_tensors[group["name"]] = group["params"][0]
-
+        
+        # 【修复】同步所有 _anchor_feat_dict 中的特征，即使它们不在优化器中
+        # 确保所有特征的数量与 _anchor 一致
+        if hasattr(self, '_anchor') and self._anchor.numel() > 0:
+            current_anchor_count = self._anchor.shape[0]
+            extension_feat = tensors_dict.get("anchor_feat")
+            
+            for key, feat in list(self._anchor_feat_dict.items()):
+                if feat.shape[0] != current_anchor_count:
+                    # 特征数量不匹配，需要扩展或裁剪
+                    if feat.shape[0] < current_anchor_count:
+                        # 需要扩展：用零填充
+                        padding = torch.zeros(
+                            current_anchor_count - feat.shape[0], 
+                            feat.shape[1], 
+                            device=feat.device, 
+                            dtype=feat.dtype
+                        )
+                        extended_feat = torch.cat([feat, padding], dim=0)
+                    else:
+                        # 需要裁剪：取前 current_anchor_count 个
+                        extended_feat = feat[:current_anchor_count]
+                    
+                    # 更新字典中的引用
+                    self._anchor_feat_dict[key] = nn.Parameter(extended_feat.requires_grad_(True))
+                    
+                    # 如果这个 key 在 optimizable_tensors 中，同步更新
+                    if key == (0, 0):
+                        param_name = "anchor_feat"
+                    else:
+                        param_name = f"anchor_feat_r{key[0]}_m{key[1]}"
+                    
+                    if param_name in optimizable_tensors:
+                        optimizable_tensors[param_name] = self._anchor_feat_dict[key]
+        
         return optimizable_tensors
 
     # ====================== 新增：核心分区训练 API ======================
