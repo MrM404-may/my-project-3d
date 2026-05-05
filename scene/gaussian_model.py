@@ -1038,15 +1038,22 @@ class GaussianModel:
             self._rotation = nn.Parameter(self._initial_state['rotation'].requires_grad_(False))
             self._opacity = nn.Parameter(self._initial_state['opacity'].requires_grad_(False))
     
-    def init_anchor_feature_storage(self, save_path, format='pt'):
+    def init_anchor_feature_storage(self, save_path, format='pt', use_ply=False):
         """
         初始化_anchor_feat存储
         参数:
             save_path: 保存路径
             format: 保存格式，'pt'或'json'
+            use_ply: 是否使用PLY优化方案
         """
-        self._anchor_feature_storage = AnchorFeatureStorage(save_path, format, lazy_load=False)
-        print(f"  [OctreeGS] Initialized anchor feature storage at {save_path}")
+        if use_ply:
+            from anchor_feature_storage_ply import AnchorFeatureStoragePLY
+            self._anchor_feature_storage = AnchorFeatureStoragePLY(save_path, lazy_load=False)
+            print(f"  [OctreeGS] Initialized PLY anchor feature storage at {save_path}")
+        else:
+            from anchor_feature_storage import AnchorFeatureStorage
+            self._anchor_feature_storage = AnchorFeatureStorage(save_path, format, lazy_load=False)
+            print(f"  [OctreeGS] Initialized anchor feature storage at {save_path}")
     
     def save_current_anchor_features(self, region_id, moment=0):
         """
@@ -1074,15 +1081,20 @@ class GaussianModel:
         self._anchor_feature_storage.save()
         print(f"  [OctreeGS] Saved anchor features for region {region_id}, moment {moment}")
     
-    def load_anchor_features_from_file(self, file_path, format='pt'):
+    def load_anchor_features_from_file(self, file_path, format='pt', use_ply=False):
         """
         从文件加载 anchor feature 存储
         参数:
             file_path: 文件路径
             format: 文件格式，'pt'或'json'
+            use_ply: 是否使用PLY方案
         """
-        from anchor_feature_storage import AnchorFeatureStorage
-        self._anchor_feature_storage = AnchorFeatureStorage(file_path, format, lazy_load=True)
+        if use_ply:
+            from anchor_feature_storage_ply import AnchorFeatureStoragePLY
+            self._anchor_feature_storage = AnchorFeatureStoragePLY(file_path, lazy_load=True)
+        else:
+            from anchor_feature_storage import AnchorFeatureStorage
+            self._anchor_feature_storage = AnchorFeatureStorage(file_path, format, lazy_load=True)
     
     def apply_anchor_features(self, region, moment, tolerance=1e-3):
         """

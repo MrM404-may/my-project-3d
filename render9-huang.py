@@ -49,9 +49,18 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         makedirs(render_level_path, exist_ok=True)
     
     # 加载 anchor features（如果提供了文件）
-    if anchor_feat_file is not None and os.path.exists(anchor_feat_file):
+    # 首先检查是否有 PLY 格式
+    use_ply = False
+    ply_base_path = os.path.join(model_path, "anchor_features")
+    if os.path.exists(f"{ply_base_path}_index.json"):
+        print(f"[Render] Using PLY anchor feature storage at {ply_base_path}")
+        anchor_feat_file = ply_base_path
+        use_ply = True
+    elif anchor_feat_file is not None and os.path.exists(anchor_feat_file):
         print(f"[Render] Loading anchor features from {anchor_feat_file}")
-        gaussians.load_anchor_features_from_file(anchor_feat_file, format='pt' if anchor_feat_file.endswith('.pt') else 'json')
+    
+    if 'anchor_feat_file' in locals() and anchor_feat_file and (os.path.exists(anchor_feat_file) or use_ply):
+        gaussians.load_anchor_features_from_file(anchor_feat_file, format='pt' if anchor_feat_file.endswith('.pt') else 'json', use_ply=use_ply)
         
         # 打印调试信息
         if hasattr(gaussians, '_anchor_feature_storage'):
